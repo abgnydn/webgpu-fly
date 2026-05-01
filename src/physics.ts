@@ -28,8 +28,8 @@ export class Physics {
 
   /** mesh id (mujoco mesh table index) → OBJ filename. */
   meshFileById: string[] = [];
-  /** Cached wing-pitch actuator ids for the simple buzz demo. */
-  private wingActIds: number[] = [];
+  /** Cached wing actuator ids by axis × side (flybody convention). */
+  private wingActs: { yawL: number; yawR: number; rollL: number; rollR: number; pitchL: number; pitchR: number } | null = null;
   /** Cached claw-adhesion actuator ids; set to 1.0 to keep feet on the floor. */
   private clawAdhesionIds: number[] = [];
 
@@ -151,16 +151,14 @@ export class Physics {
     const grp = p.opt.geomgroup as Uint8Array;
     if (grp && grp.length > 4) grp[4] = 0;
 
-    // Cache wing-actuator IDs so the renderer can buzz them in response
-    // to descending-neuron drive without doing name lookups every frame.
-    for (const name of [
-      "wing_pitch_left", "wing_pitch_right",
-      "wing_yaw_left", "wing_yaw_right",
-    ]) {
-      const id = p.mujoco.mj_name2id(
-        p.model, p.mujoco.mjtObj.mjOBJ_ACTUATOR.value, name,
-      );
-      if (id >= 0) p.wingActIds.push(id);
+    // Cache the six wing actuators (yaw / roll / pitch × left / right) so
+    // we can drive them with flybody's canonical wing-beat pattern.
+    const id = (n: string) => p.mujoco.mj_name2id(p.model, p.mujoco.mjtObj.mjOBJ_ACTUATOR.value, n);
+    const yawL = id("wing_yaw_left"), yawR = id("wing_yaw_right");
+    const rollL = id("wing_roll_left"), rollR = id("wing_roll_right");
+    const pitchL = id("wing_pitch_left"), pitchR = id("wing_pitch_right");
+    if (yawL >= 0 && yawR >= 0 && rollL >= 0 && rollR >= 0 && pitchL >= 0 && pitchR >= 0) {
+      p.wingActs = { yawL, yawR, rollL, rollR, pitchL, pitchR };
     }
     // Claw-adhesion actuators per leg (T1/T2/T3 × left/right). Driving
     // these at ctrl=1 keeps the feet stuck to the floor, which is what
@@ -181,26 +179,37 @@ export class Physics {
     const ctrl = p.data.ctrl as Float64Array;
     for (const id of p.clawAdhesionIds) ctrl[id] = 1.0;
 
-    onProgress?.(`flybody ready (${p.model.nbody} bodies, ${nmesh} meshes, ${p.wingActIds.length} wing acts, ${p.clawAdhesionIds.length} claws)`);
+    onProgress?.(`flybody ready (${p.model.nbody} bodies, ${nmesh} meshes, wings=${p.wingActs ? "ok" : "missing"}, ${p.clawAdhesionIds.length} claws)`);
     return p;
   }
 
   /**
-   * Demo drive: sinusoidal wing flap at `freqHz` with peak amplitude
-   * `amp` ∈ [0, 1]. Caller picks `amp` from DN activity each frame.
-   * Also re-asserts claw adhesion at 1.0 each call so the body stays
-   * grounded against wing reactive force.
+   * Drive the six wing actuators with flybody's canonical wing-beat
+   * pattern (TuragaLab/flybody/flybody/tasks/pattern_generators.py:
+   * default approximation). Real fruit fly wing beat is 218 Hz; the
+   * yaw/roll/pitch shape is what produces stable hover instead of
+   * unbalanced thrust.
+   *
+   * `amp` ∈ [0, 1] scales the whole pattern from DN drive. Also
+   * re-asserts claw adhesion at 1.0 so the freejoint body stays put.
    */
-  driveWings(amp: number, freqHz = 30) {
+  driveWings(amp: number) {
     const ctrl = this.data.ctrl as Float64Array;
     for (const id of this.clawAdhesionIds) ctrl[id] = 1.0;
-    if (this.wingActIds.length === 0) return;
+    if (!this.wingActs) return;
     const t = this.data.time as number;
-    // Cap amplitude low — full-range wing pitch produces enough lift
-    // to launch the freejoint body. 0.15 is a gentle visible flap.
-    const a = Math.max(0, Math.min(1, amp)) * 0.15;
-    const s = Math.sin(t * freqHz * 2 * Math.PI) * a;
-    for (const id of this.wingActIds) ctrl[id] = s;
+    const a = Math.max(0, Math.min(1, amp));
+    const x = t * 218.0 * 2 * Math.PI;        // _WING_PARAMS['base_freq']
+    const yaw   = 1.1  * Math.sin(x - Math.PI / 2) + 0.3;
+    const roll  = 0.25 * Math.sin(1.5 * x)         - 0.1;
+    const pitch = 1.35 * Math.sin(x)               + 0.8;
+    const w = this.wingActs;
+    ctrl[w.yawL]   = yaw   * a;
+    ctrl[w.yawR]   = yaw   * a;
+    ctrl[w.rollL]  = roll  * a;
+    ctrl[w.rollR]  = roll  * a;
+    ctrl[w.pitchL] = pitch * a;
+    ctrl[w.pitchR] = pitch * a;
   }
 
   /** Repopulate the visual scene from current MjData. Caller iterates scene.geoms. */
