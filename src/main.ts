@@ -4,6 +4,7 @@ import { loadBrain, type Brain } from "./brain";
 import { FlySim, DEFAULT_PARAMS } from "./sim";
 import { FlyViewer } from "./viewer";
 import { Room } from "./room";
+import { Physics } from "./physics";
 
 const SUPER_CLASS = [
   "unknown", "sensory", "ascending", "intrinsic", "central",
@@ -122,6 +123,15 @@ async function main() {
   const roomContainer = document.getElementById("room-container") as HTMLDivElement;
   const room = new Room({ container: roomContainer });
   const driveReadout = document.getElementById("drive-readout") as HTMLDivElement;
+
+  // Load MuJoCo physics in the background; until it lands, room falls back
+  // to the kinematic integrator. Don't block the brain init on it.
+  Physics.create()
+    .then((p) => {
+      room.attachPhysics(p);
+      log("MuJoCo physics ready (planar 3-DoF chassis)", "ok");
+    })
+    .catch((e) => log(`MuJoCo failed to load: ${(e as Error).message}`, "warn"));
 
   // Pre-bin DN indices by hemisphere using pos_x relative to brain centroid.
   // Left hemisphere = pos_x < cx (anatomical left when looking at the brain

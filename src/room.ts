@@ -7,6 +7,7 @@
 //   turn    in [-1, 1]  — left to right yaw rate (rad/sec)
 
 import * as THREE from "three";
+import { Physics } from "./physics";
 
 export interface RoomOpts {
   container: HTMLElement;
@@ -22,6 +23,7 @@ export class Room {
   readonly renderer: THREE.WebGLRenderer;
 
   private fly: Fly;
+  private physics: Physics | null = null;
   private rafId = 0;
   private lastT = performance.now();
 
@@ -94,6 +96,11 @@ export class Room {
     window.addEventListener("resize", () => this.onResize(container));
   }
 
+  /** Attach a MuJoCo Physics instance. Once attached, body pose comes from physics; before that, kinematic fallback is used. */
+  attachPhysics(physics: Physics) {
+    this.physics = physics;
+  }
+
   /** Push commanded velocity. Units: forward = body-lengths/sec; turn = rad/sec. */
   setDrive(forward: number, turn: number) {
     this.forward = forward;
@@ -102,6 +109,7 @@ export class Room {
 
   /** Reset fly to origin facing +Z, zero velocity. */
   resetFly() {
+    this.physics?.reset();
     this.fly.group.position.set(0, 0, 0);
     this.fly.group.rotation.y = 0;
     this.fly.gaitPhase = 0;
@@ -165,23 +173,34 @@ export class Room {
       const dt = Math.min(0.05, (t - this.lastT) / 1000);
       this.lastT = t;
 
-      // Integrate yaw + position from commanded velocity.
       const g = this.fly.group;
-      g.rotation.y += this.turn * dt;
-      const speed = this.forward * 4.0; // scale: 1.0 cmd ≈ 4 units/sec
-      g.position.x += Math.sin(g.rotation.y) * speed * dt;
-      g.position.z += Math.cos(g.rotation.y) * speed * dt;
-
-      // Clamp inside floor disc so the fly doesn't wander off.
-      const r = Math.hypot(g.position.x, g.position.z);
-      const lim = FLOOR_SIZE / 2 - 1.5;
-      if (r > lim) {
-        const k = lim / r;
-        g.position.x *= k;
-        g.position.z *= k;
+      let speed: number;
+      if (this.physics) {
+        // Real-physics path: MuJoCo owns body pose. Map MuJoCo (x, y, yaw,
+        // z-up) → Three.js (x, z, -yaw, y-up). The y-up sign flip on yaw
+        // keeps the visual rotation chirality consistent.
+        const pose = this.physics.step(this.forward, this.turn);
+        g.position.x = pose.x;
+        g.position.z = -pose.y;
+        g.rotation.y = -pose.yaw;
+        speed = Math.abs(this.forward * 4.0);
+      } else {
+        // Fallback (pre-physics-load) — kinematic integration.
+        g.rotation.y += this.turn * dt;
+        speed = this.forward * 4.0;
+        g.position.x += Math.sin(g.rotation.y) * speed * dt;
+        g.position.z += Math.cos(g.rotation.y) * speed * dt;
+        const r = Math.hypot(g.position.x, g.position.z);
+        const lim = FLOOR_SIZE / 2 - 1.5;
+        if (r > lim) {
+          const k = lim / r;
+          g.position.x *= k;
+          g.position.z *= k;
+        }
+        speed = Math.abs(speed);
       }
 
-      this.fly.update(dt, Math.abs(speed));
+      this.fly.update(dt, speed);
       this.updateCameraFromOrbit();
       this.renderer.render(this.scene, this.camera);
     };
