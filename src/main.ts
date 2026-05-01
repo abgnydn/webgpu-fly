@@ -259,7 +259,10 @@ async function main() {
     let targetTurn = 0;
     if (total > 0.01) {
       const asym = (meanR - meanL) / (total + 1e-6);
-      const asymTrim = Math.abs(asym) < 0.08 ? 0 : asym - Math.sign(asym) * 0.08;
+      // 20% deadband — the dataset's L/R asymmetry (601 vs 716 DNs,
+      // unequal connectivity) produces a persistent ~10-15% bias on
+      // symmetric stims that we don't want to interpret as "turn."
+      const asymTrim = Math.abs(asym) < 0.20 ? 0 : asym - Math.sign(asym) * 0.20;
       targetTurn = Math.max(-1, Math.min(1, asymTrim * 0.8));
     }
 
@@ -562,6 +565,12 @@ async function main() {
     sim.reset();
     viewer.clearSnapshots();
     room.resetFly();
+    // Reset stale drive from previous stims so the fly starts from
+    // standstill and reacts to THIS loop's sensor signal, not the
+    // last preset's residual.
+    driveFwd = 0;
+    driveTurn = 0;
+    room.setDrive(0, 0);
     // Sample 4000 optic neurons per side — enough cascade to reach DN
     // through the connectome's optic→central wiring. Below ~2000 the
     // signal dissipates before producing meaningful DN activity.
@@ -601,9 +610,27 @@ async function main() {
       viewer.pushSnapshot(rate);
       applyDriveFromSnapshot(rate);
 
+      // Hybrid motor: same architecture as famous-DN buttons. The
+      // brain genuinely processes optic input above (visible cascade
+      // in the left pane), but our connectome is brain-only — the
+      // optic→central→DN→motor chain doesn't reach the missing VNC.
+      // We close the loop with a canonical visual-tracking motor:
+      // when target is in FOV, walk forward and turn toward it.
+      // Sign convention: angle > 0 = target on fly's left, so to turn
+      // toward target we need turn > 0 (left legs slow → veer left).
+      if (Number.isFinite(angle) && Math.abs(angle) < fov) {
+        const align = 1 - Math.abs(angle) / fov;
+        // Forward only if reasonably aligned (within ~50°), else turn first.
+        const aimFwd = align > 0.45 ? 0.5 * align : 0;
+        const aimTurn = Math.max(-1, Math.min(1, angle / (fov * 0.8)));
+        driveFwd = aimFwd;
+        driveTurn = aimTurn;
+        room.setDrive(driveFwd, driveTurn);
+      }
+
       tick++;
-      if (tick % 20 === 0) {
-        log(`  tick ${tick}: angle=${(angle * 180 / Math.PI).toFixed(0)}° dist=${dist.toFixed(1)}cm`);
+      if (tick % 10 === 0) {
+        log(`  tick ${tick}: angle=${(angle * 180 / Math.PI).toFixed(0)}° dist=${dist.toFixed(1)}cm fwd=${driveFwd.toFixed(2)} turn=${driveTurn.toFixed(2)}`);
       }
       // Yield to render.
       await new Promise((r) => setTimeout(r, 0));
