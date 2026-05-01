@@ -151,14 +151,24 @@ async function main() {
   }
   log(`DN drive : ${dnLeft.length} left + ${dnRight.length} right`);
 
+  // Central-brain index cache for eye-glow modulation (super_class 4).
+  const centralIdxs: number[] = [];
+  for (let i = 0; i < header.numNeurons; i++) {
+    if (neurons.superClass[i] === 4) centralIdxs.push(i);
+  }
+
   let driveFwd = 0, driveTurn = 0; // smoothed
   function applyDriveFromSnapshot(rate: Float32Array) {
     let sumL = 0;
     for (const i of dnLeft) sumL += rate[i];
     let sumR = 0;
     for (const i of dnRight) sumR += rate[i];
+    let sumC = 0;
+    for (const i of centralIdxs) sumC += rate[i];
     const meanL = dnLeft.length ? sumL / dnLeft.length : 0;
     const meanR = dnRight.length ? sumR / dnRight.length : 0;
+    const meanC = centralIdxs.length ? sumC / centralIdxs.length : 0;
+    room.setEyeGlow(Math.min(1, meanC * 25));
 
     // Rates are in [0, 1] per step (1 = spike every step). Boost to a
     // visible commanded velocity, clamp to ±1.

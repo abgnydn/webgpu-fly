@@ -118,16 +118,23 @@ export class Room {
   }
 
   private updateCameraFromOrbit() {
-    const ce = Math.cos(this.elevation), se = Math.sin(this.elevation);
-    const ca = Math.cos(this.azimuth), sa = Math.sin(this.azimuth);
-    this.camera.position.set(
-      this.radius * ce * sa,
-      this.radius * se + 2,
-      this.radius * ce * ca,
-    );
     const tx = this.fly ? this.fly.group.position.x : 0;
     const tz = this.fly ? this.fly.group.position.z : 0;
+    const ce = Math.cos(this.elevation), se = Math.sin(this.elevation);
+    const ca = Math.cos(this.azimuth), sa = Math.sin(this.azimuth);
+    // Orbit around the fly so it stays centred as it walks.
+    this.camera.position.set(
+      tx + this.radius * ce * sa,
+      this.radius * se + 2,
+      tz + this.radius * ce * ca,
+    );
     this.camera.lookAt(tx, 1, tz);
+  }
+
+  /** Modulate the fly's eye glow with brain activity (0..1). */
+  setEyeGlow(intensity: number) {
+    if (!this.fly) return;
+    this.fly.setEyeIntensity(intensity);
   }
 
   private attachInput() {
@@ -221,6 +228,11 @@ class Fly {
   private legAnchors: THREE.Object3D[] = [];
   private legTips: THREE.Mesh[] = [];
   private legLines: THREE.Line[] = [];
+  private eyeMaterial!: THREE.MeshStandardMaterial;
+
+  setEyeIntensity(t: number) {
+    this.eyeMaterial.emissiveIntensity = 0.4 + 1.6 * Math.max(0, Math.min(1, t));
+  }
 
   constructor() {
     // Body — abdomen + thorax + head, slight gold glow
@@ -246,13 +258,14 @@ class Fly {
     head.position.set(0, 0.85, 0.95);
     this.group.add(head);
 
-    // Eyes — big red compound eyes
-    const eyeMat = new THREE.MeshStandardMaterial({
-      color: 0xff3a3a, emissive: 0x661010, emissiveIntensity: 0.8,
+    // Eyes — big red compound eyes; emissiveIntensity is modulated by
+    // central-brain activity in setEyeIntensity().
+    this.eyeMaterial = new THREE.MeshStandardMaterial({
+      color: 0xff3a3a, emissive: 0x661010, emissiveIntensity: 0.4,
       roughness: 0.3, metalness: 0.2,
     });
     for (const sx of [-1, 1]) {
-      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 12), eyeMat);
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 12), this.eyeMaterial);
       eye.position.set(0.32 * sx, 0.95, 1.0);
       this.group.add(eye);
     }
