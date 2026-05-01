@@ -358,10 +358,12 @@ export class Room {
     const tick = () => {
       this.rafId = requestAnimationFrame(tick);
       if (this.physics && this.bodies.length) {
-        // Demo drive: amplitude = total commanded drive (forward + |turn|)
-        // from DN activity. Brain spikes → DN fires → wings buzz.
-        const buzz = Math.min(1, Math.abs(this.forward) + Math.abs(this.turn));
-        this.physics.driveWings(buzz);
+        // Demo drive: amplitude = forward drive (DN sum), asymmetry =
+        // turn drive (DN L/R imbalance). Symmetric strong drive → big
+        // hover-flap; asymmetric drive → asymmetric flap = visible
+        // steering intent (real flies turn this way in flight).
+        const buzz = Math.min(1, Math.abs(this.forward) + Math.abs(this.turn) * 0.5);
+        this.physics.driveWings(buzz, this.turn);
 
         // flybody MJCF runs at dt=0.0001 s; cap sim per render frame
         // to keep frame budget sane. 32 substeps ≈ 3.2 ms simulated

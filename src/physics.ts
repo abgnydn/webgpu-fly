@@ -186,30 +186,39 @@ export class Physics {
   /**
    * Drive the six wing actuators with flybody's canonical wing-beat
    * pattern (TuragaLab/flybody/flybody/tasks/pattern_generators.py:
-   * default approximation). Real fruit fly wing beat is 218 Hz; the
-   * yaw/roll/pitch shape is what produces stable hover instead of
-   * unbalanced thrust.
+   * default approximation; base frequency 218 Hz from constants.py
+   * _WING_PARAMS['base_freq']).
    *
-   * `amp` ∈ [0, 1] scales the whole pattern from DN drive. Also
-   * re-asserts claw adhesion at 1.0 so the freejoint body stays put.
+   * @param amp  ∈ [0, 1]  overall flap amplitude (drive intensity).
+   * @param asym ∈ [-1, 1] left/right amplitude bias. Positive = right
+   *   wing flaps harder than left → torque steers the fly leftward.
+   *   This is the basic mechanism real flies use to turn in flight.
+   *
+   * Also re-asserts claw adhesion at 1.0 so the freejoint body stays
+   * grounded against wing reactive force (no actuated walking yet —
+   * that needs flybody's RL-trained walk_imitation policy, which is a
+   * separate port).
    */
-  driveWings(amp: number) {
+  driveWings(amp: number, asym = 0) {
     const ctrl = this.data.ctrl as Float64Array;
     for (const id of this.clawAdhesionIds) ctrl[id] = 1.0;
     if (!this.wingActs) return;
     const t = this.data.time as number;
     const a = Math.max(0, Math.min(1, amp));
-    const x = t * 218.0 * 2 * Math.PI;        // _WING_PARAMS['base_freq']
+    const k = Math.max(-1, Math.min(1, asym)) * 0.4;   // ±40% L/R bias
+    const aL = a * (1 - k);
+    const aR = a * (1 + k);
+    const x = t * 218.0 * 2 * Math.PI;
     const yaw   = 1.1  * Math.sin(x - Math.PI / 2) + 0.3;
     const roll  = 0.25 * Math.sin(1.5 * x)         - 0.1;
     const pitch = 1.35 * Math.sin(x)               + 0.8;
     const w = this.wingActs;
-    ctrl[w.yawL]   = yaw   * a;
-    ctrl[w.yawR]   = yaw   * a;
-    ctrl[w.rollL]  = roll  * a;
-    ctrl[w.rollR]  = roll  * a;
-    ctrl[w.pitchL] = pitch * a;
-    ctrl[w.pitchR] = pitch * a;
+    ctrl[w.yawL]   = yaw   * aL;
+    ctrl[w.yawR]   = yaw   * aR;
+    ctrl[w.rollL]  = roll  * aL;
+    ctrl[w.rollR]  = roll  * aR;
+    ctrl[w.pitchL] = pitch * aL;
+    ctrl[w.pitchR] = pitch * aR;
   }
 
   /** Repopulate the visual scene from current MjData. Caller iterates scene.geoms. */
