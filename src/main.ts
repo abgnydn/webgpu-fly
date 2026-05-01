@@ -172,6 +172,19 @@ async function main() {
     if (neurons.superClass[i] === 4) centralIdxs.push(i);
   }
 
+  // Optic-lobe index buckets split by hemisphere — used for closed-
+  // loop visual drive. Target on fly's right → drive right-optic
+  // neurons; target on left → drive left-optic. The connectome's
+  // optic→central→DN wiring then decides the motor response.
+  const opticLeft: number[] = [];
+  const opticRight: number[] = [];
+  for (let i = 0; i < header.numNeurons; i++) {
+    if (neurons.superClass[i] !== 10) continue;
+    if (neurons.pos[3 * i] < cx) opticLeft.push(i);
+    else opticRight.push(i);
+  }
+  log(`optic   : ${opticLeft.length} left + ${opticRight.length} right`);
+
   // Hero-group index buckets for the validation table.
   const heroBuckets = new Map<number, number[]>();
   for (let i = 0; i < header.numNeurons; i++) {
@@ -308,6 +321,24 @@ async function main() {
       buttons.push(btn);
     }
   }
+
+  // --- Closed-loop visual button ---
+  // Continuously read fly→target angle, drive optic neurons accordingly,
+  // step the brain in small bursts, push DN drive back to body. The fly
+  // should turn toward the red sphere by virtue of its connectome wiring.
+  const loopSection = document.createElement("div");
+  loopSection.style.marginTop = "10px";
+  const loopH = document.createElement("h2");
+  loopH.style.cssText = "margin: 0 0 6px 0; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: #6c7480";
+  loopH.textContent = "Closed-loop";
+  loopSection.appendChild(loopH);
+  const loopBtn = document.createElement("button");
+  loopBtn.className = "stim-btn";
+  loopBtn.style.flex = "1 0 100%";
+  loopBtn.innerHTML = `<span class="label">Track target</span><span class="hint">vision → brain → body, continuous</span>`;
+  loopSection.appendChild(loopBtn);
+  stimRow.parentElement?.appendChild(loopSection);
+  buttons.push(loopBtn);
 
   // --- Wire scrub + play + record ---
   const controls = document.getElementById("controls") as HTMLDivElement;
@@ -474,6 +505,86 @@ async function main() {
     buttons.forEach((b) => { b.disabled = false; });
     busy = false;
   }
+
+  // --- Closed-loop visual mode ---
+  // Continuous: each tick reads fly→target angle, drives optic neurons
+  // proportional to alignment, runs a small brain burst, applies DN
+  // drive to body, repeats. Fly should turn toward target via the
+  // connectome's existing optic→DN wiring — no hard-coded mapping.
+  let continuousMode = false;
+  async function runContinuousLoop(btn: HTMLButtonElement) {
+    if (busy && !continuousMode) return;
+    if (continuousMode) {
+      continuousMode = false;
+      btn.classList.remove("active");
+      log("closed-loop tracking stopped");
+      return;
+    }
+    continuousMode = true;
+    busy = true;
+    buttons.forEach((b) => { if (b !== btn) b.classList.remove("active"); });
+    btn.classList.add("active");
+    controls.hidden = true;
+    log("");
+    log(`--- closed-loop visual: track red target ---`, "ok");
+    sim.reset();
+    viewer.clearSnapshots();
+    room.resetFly();
+    // Limit how many optic neurons we drive each tick — 77k×2 driven
+    // hard each tick is overkill and risks runaway. Sample 500 from
+    // each side. Indices are fixed across ticks.
+    const sampleN = 500;
+    const stride = Math.max(1, Math.floor(opticLeft.length / sampleN));
+    const lSubset: number[] = [];
+    for (let i = 0; i < opticLeft.length; i += stride) lSubset.push(opticLeft[i]);
+    const rStride = Math.max(1, Math.floor(opticRight.length / sampleN));
+    const rSubset: number[] = [];
+    for (let i = 0; i < opticRight.length; i += rStride) rSubset.push(opticRight[i]);
+
+    const ext = new Float32Array(header.numNeurons);
+    let tick = 0;
+    while (continuousMode) {
+      // Sense: angle from fly heading to target. + = target on fly's left.
+      const angle = room.targetAngle();
+      const dist = room.targetDistance();
+      // Out of FOV (>90°) → no optic drive.
+      const fov = Math.PI / 2;
+      ext.fill(0);
+      if (Number.isFinite(angle) && Math.abs(angle) < fov) {
+        // Drive ipsilateral optic neurons more strongly than contra.
+        // Real fly: target on left visual field activates LEFT optic.
+        // But the brain's recurrent wiring inverts this for steering —
+        // we just push the raw signal in and trust the connectome.
+        const align = 1 - Math.abs(angle) / fov;     // 0..1
+        const lScale = align * (angle > 0 ? 1.0 : 0.3);  // strong on side facing target
+        const rScale = align * (angle < 0 ? 1.0 : 0.3);
+        const amp = 0.4 + 0.6 / Math.max(1, dist);   // closer → brighter
+        for (const i of lSubset) ext[i] = amp * lScale;
+        for (const i of rSubset) ext[i] = amp * rScale;
+      }
+      sim.setExternalInput(ext);
+
+      // Step brain in a short burst (50 ms simulated). This is small
+      // enough to keep latency tight (~0.25 s wall per tick) but long
+      // enough to let cascades propagate and DN activity settle.
+      const rate = await sim.captureRollingRate(50);
+      viewer.pushSnapshot(rate);
+      applyDriveFromSnapshot(rate);
+
+      tick++;
+      if (tick % 20 === 0) {
+        log(`  tick ${tick}: angle=${(angle * 180 / Math.PI).toFixed(0)}° dist=${dist.toFixed(1)}cm`);
+      }
+      // Yield to render.
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    // Cleanup when loop exits.
+    btn.classList.remove("active");
+    buttons.forEach((b) => { b.disabled = false; });
+    busy = false;
+    controls.hidden = false;
+  }
+  loopBtn.addEventListener("click", () => runContinuousLoop(loopBtn));
 
   // --- Click-to-stim: pulse a single neuron, watch the cascade ---
   async function runSingleNeuronStim(idx: number) {

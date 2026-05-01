@@ -52,6 +52,11 @@ export class Room {
   private physics: Physics | null = null;
   private rafId = 0;
 
+  // Closed-loop visual target (a glowing sphere the fly can "see").
+  private target: THREE.Mesh | null = null;
+  /** Target position in MuJoCo world frame (cm), z-up. */
+  targetPos: [number, number, number] = [3.0, 0, 0.13];
+
   // orbit
   private isDragging = false;
   private prev = { x: 0, y: 0 };
@@ -92,6 +97,18 @@ export class Room {
     this.mjRoot.scale.setScalar(VISUAL_SCALE);
     this.scene.add(this.mjRoot);
 
+    // Glowing red target — placed at MuJoCo world (3, 0, 0.13) cm,
+    // i.e. 3 cm in front of the fly's spawn at fly head height. Sits
+    // inside the mjRoot so it shares the y-up rotation + scale.
+    const targetGeo = new THREE.SphereGeometry(0.15, 16, 12);
+    const targetMat = new THREE.MeshStandardMaterial({
+      color: 0xff3a3a, emissive: 0xff1010, emissiveIntensity: 1.5,
+      roughness: 0.4, metalness: 0.1,
+    });
+    this.target = new THREE.Mesh(targetGeo, targetMat);
+    this.target.position.set(this.targetPos[0], this.targetPos[2], -this.targetPos[1]);
+    this.mjRoot.add(this.target);
+
     this.updateCameraFromOrbit();
     this.attachInput();
     this.startLoop();
@@ -106,6 +123,42 @@ export class Room {
   setDrive(forward: number, turn: number) { this.forward = forward; this.turn = turn; }
   resetFly() { this.physics?.reset(); }
   bodySpeed(): number { return this.physics?.bodySpeed ?? 0; }
+
+  /**
+   * Sensor read for closed-loop control. Returns the signed horizontal
+   * angle (radians) from the fly's body heading to the visual target,
+   * in the MuJoCo world frame. Positive = target on fly's left;
+   * negative = target on fly's right. NaN if physics not ready.
+   */
+  targetAngle(): number {
+    const phys = this.physics;
+    if (!phys) return NaN;
+    const qpos = phys.data.qpos as Float64Array;
+    if (!qpos || qpos.length < 7) return NaN;
+    // Fly position (freejoint xyz at qpos[0..2])
+    const fx = qpos[0], fy = qpos[1];
+    // Fly heading: rotate body +y axis by quat (qw=qpos[3], qx,qy,qz=4..6)
+    const qw = qpos[3], qx = qpos[4], qy = qpos[5], qz = qpos[6];
+    const hx = 2 * (qx * qy - qw * qz);
+    const hy = 1 - 2 * (qx * qx + qz * qz);
+    // Vector to target in xy plane
+    const tx = this.targetPos[0] - fx, ty = this.targetPos[1] - fy;
+    // Angle from heading to target (signed via cross product z-component)
+    const dot = hx * tx + hy * ty;
+    const cross = hx * ty - hy * tx;
+    return Math.atan2(cross, dot);
+  }
+
+  /** Distance to target in MuJoCo cm (xy plane). */
+  targetDistance(): number {
+    const phys = this.physics;
+    if (!phys) return NaN;
+    const qpos = phys.data.qpos as Float64Array;
+    if (!qpos || qpos.length < 2) return NaN;
+    const dx = this.targetPos[0] - qpos[0];
+    const dy = this.targetPos[1] - qpos[1];
+    return Math.sqrt(dx * dx + dy * dy);
+  }
   setEyeGlow(_: number) { /* TODO: locate head body, modulate emissive. */ }
 
   // --- scene-graph build (zalo pattern) -------------------------------------
