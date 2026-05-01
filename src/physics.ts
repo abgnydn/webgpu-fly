@@ -251,8 +251,12 @@ export class Physics {
         const qpos = this.data.qpos as Float64Array;
         const qvel = this.data.qvel as Float64Array;
         const qw = qpos[3], qx = qpos[4], qy = qpos[5], qz = qpos[6];
-        const fx = 2 * (qx * qy - qw * qz);
-        const fy = 1 - 2 * (qx * qx + qz * qz);
+        // flybody's head sits at body-local +x (see thorax XML
+        // children). Rotate body +x by the freejoint quat to get
+        // world heading. Earlier code used body +y, which made the
+        // mesh appear to scoot sideways relative to its motion.
+        const fx = 1 - 2 * (qy * qy + qz * qz);
+        const fy = 2 * (qx * qy + qw * qz);
         const drv = Math.sqrt(Math.abs(this.fwdCmd));
         const v = 4.0 * this.fwdCmd;       // signed: negative → backward
         qvel[0] = fx * v;

@@ -53,11 +53,10 @@ export class Room {
   private rafId = 0;
 
   // Closed-loop visual target (a glowing sphere the fly can "see").
-  // Placed dead ahead of the fly's spawn (heading is MJ +y after
-  // reset), 3 cm in front, at thorax height. This guarantees the
-  // target starts inside the camera FOV.
+  // flybody's head is at body-local +x, so the fly's spawn heading is
+  // world +x. Place the target 3 cm in that direction.
   private target: THREE.Mesh | null = null;
-  targetPos: [number, number, number] = [0, 3.0, 0.13];
+  targetPos: [number, number, number] = [3.0, 0, 0.13];
 
   // orbit
   private isDragging = false;
@@ -141,10 +140,11 @@ export class Room {
     if (!qpos || qpos.length < 7) return NaN;
     // Fly position (freejoint xyz at qpos[0..2])
     const fx = qpos[0], fy = qpos[1];
-    // Fly heading: rotate body +y axis by quat (qw=qpos[3], qx,qy,qz=4..6)
+    // Fly heading: flybody's head is at body-local +x (per the MJCF),
+    // so rotate body +x by the freejoint quat for the world heading.
     const qw = qpos[3], qx = qpos[4], qy = qpos[5], qz = qpos[6];
-    const hx = 2 * (qx * qy - qw * qz);
-    const hy = 1 - 2 * (qx * qx + qz * qz);
+    const hx = 1 - 2 * (qy * qy + qz * qz);
+    const hy = 2 * (qx * qy + qw * qz);
     // Vector to target in xy plane
     const tx = this.targetPos[0] - fx, ty = this.targetPos[1] - fy;
     // Angle from heading to target (signed via cross product z-component)
