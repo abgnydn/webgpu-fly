@@ -358,11 +358,14 @@ export class Room {
     const tick = () => {
       this.rafId = requestAnimationFrame(tick);
       if (this.physics && this.bodies.length) {
-        // Demo drive: amplitude = forward drive (DN sum), asymmetry =
-        // turn drive (DN L/R imbalance). Symmetric strong drive → big
-        // hover-flap; asymmetric drive → asymmetric flap = visible
-        // steering intent (real flies turn this way in flight).
-        const buzz = Math.min(1, Math.abs(this.forward) + Math.abs(this.turn) * 0.5);
+        // Brain → VNC stand-in → body. Two motor primitives selected
+        // by DN drive: tripod walk gait (amplitude = forward) and
+        // wing-buzz hover (amplitude = remaining drive after walking).
+        const walkAmp = Math.min(1, Math.max(0, this.forward));
+        this.physics.driveLegs(walkAmp, this.turn);
+        // Wings get a smaller buzz — secondary behavior unless the
+        // fly is "trying to fly" (idle freq buzz when active).
+        const buzz = Math.min(1, Math.abs(this.forward) * 0.5 + Math.abs(this.turn) * 0.3);
         this.physics.driveWings(buzz, this.turn);
 
         // flybody MJCF runs at dt=0.0001 s; cap sim per render frame

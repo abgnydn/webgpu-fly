@@ -30,8 +30,10 @@ export class Physics {
   meshFileById: string[] = [];
   /** Cached wing actuator ids by axis × side (flybody convention). */
   private wingActs: { yawL: number; yawR: number; rollL: number; rollR: number; pitchL: number; pitchR: number } | null = null;
-  /** Cached claw-adhesion actuator ids; set to 1.0 to keep feet on the floor. */
-  private clawAdhesionIds: number[] = [];
+  /** Cached per-leg actuator ids for the VNC stand-in CPG. */
+  private legActs: Record<string, { coxa: number; femur: number; tibia: number; adhesion: number }> = {};
+  /** Six tarsus-claw legs in flybody. */
+  private static readonly LEG_KEYS = ["T1_left", "T1_right", "T2_left", "T2_right", "T3_left", "T3_right"] as const;
 
   static async create(onProgress?: (msg: string) => void): Promise<Physics> {
     const p = new Physics();
@@ -160,26 +162,28 @@ export class Physics {
     if (yawL >= 0 && yawR >= 0 && rollL >= 0 && rollR >= 0 && pitchL >= 0 && pitchR >= 0) {
       p.wingActs = { yawL, yawR, rollL, rollR, pitchL, pitchR };
     }
-    // Claw-adhesion actuators per leg (T1/T2/T3 × left/right). Driving
-    // these at ctrl=1 keeps the feet stuck to the floor, which is what
-    // a real fly does standing still — without them, even a small wing
-    // flap reactive force launches the freejoint thorax.
-    for (const name of [
-      "adhere_claw_T1_left", "adhere_claw_T1_right",
-      "adhere_claw_T2_left", "adhere_claw_T2_right",
-      "adhere_claw_T3_left", "adhere_claw_T3_right",
-    ]) {
-      const id = p.mujoco.mj_name2id(
-        p.model, p.mujoco.mjtObj.mjOBJ_ACTUATOR.value, name,
-      );
-      if (id >= 0) p.clawAdhesionIds.push(id);
+    // Cache leg actuator IDs (coxa swing, femur lift, tibia extend, claw
+    // adhesion) per leg. The VNC stand-in writes these each frame to
+    // produce a tripod gait — adhesion modulates between stance (1.0)
+    // and swing (0.0) per cycle so feet release before lifting.
+    for (const leg of Physics.LEG_KEYS) {
+      p.legActs[leg] = {
+        coxa: id(`coxa_${leg}`),
+        femur: id(`femur_${leg}`),
+        tibia: id(`tibia_${leg}`),
+        adhesion: id(`adhere_claw_${leg}`),
+      };
     }
-    // Default the adhesion ctrl to fully on (the simulation step picks
-    // these up each frame).
+    // Default all six adhesion ctrls fully on so the standing fly
+    // doesn't slide before any drive arrives.
     const ctrl = p.data.ctrl as Float64Array;
-    for (const id of p.clawAdhesionIds) ctrl[id] = 1.0;
+    for (const leg of Physics.LEG_KEYS) {
+      const aId = p.legActs[leg].adhesion;
+      if (aId >= 0) ctrl[aId] = 1.0;
+    }
 
-    onProgress?.(`flybody ready (${p.model.nbody} bodies, ${nmesh} meshes, wings=${p.wingActs ? "ok" : "missing"}, ${p.clawAdhesionIds.length} claws)`);
+    const goodLegs = Physics.LEG_KEYS.filter((k) => p.legActs[k].coxa >= 0).length;
+    onProgress?.(`flybody ready (${p.model.nbody} bodies, ${nmesh} meshes, wings=${p.wingActs ? "ok" : "missing"}, legs=${goodLegs}/6)`);
     return p;
   }
 
@@ -200,9 +204,8 @@ export class Physics {
    * separate port).
    */
   driveWings(amp: number, asym = 0) {
-    const ctrl = this.data.ctrl as Float64Array;
-    for (const id of this.clawAdhesionIds) ctrl[id] = 1.0;
     if (!this.wingActs) return;
+    const ctrl = this.data.ctrl as Float64Array;
     const t = this.data.time as number;
     // Cap overall amplitude. flybody's canonical pattern peaks at
     // pitch ≈ 2.15 — that IS the full-flight amplitude meant to lift
@@ -239,6 +242,65 @@ export class Physics {
   step(substeps = 1) {
     for (let s = 0; s < substeps; s++) {
       this.mujoco.mj_step(this.model, this.data);
+    }
+  }
+
+  /**
+   * VNC stand-in: tripod-gait CPG that writes per-leg coxa swing,
+   * femur lift and adhesion gating into flybody's position actuators.
+   * The brain (FlyWire) provides the high-level signals — this is the
+   * spinal-cord layer between brain and muscle that real flies have
+   * in their VNC. Hand-coded analytic primitive, not RL-trained.
+   *
+   * @param walk  ∈ [0, 1]  forward locomotion drive (DN sum).
+   * @param turn  ∈ [-1, 1] L/R asymmetry (DN imbalance). Positive →
+   *   left legs slow, right legs fast → fly veers left.
+   */
+  driveLegs(walk: number, turn = 0) {
+    const ctrl = this.data.ctrl as Float64Array;
+    const t = this.data.time as number;
+    const w = Math.max(0, Math.min(1, walk));
+    const tu = Math.max(-1, Math.min(1, turn));
+
+    // Cycle frequency scales with drive — 0 Hz at rest (legs hold
+    // adhesion-locked stance), up to ~6 Hz at full forward drive
+    // (close to real fly walk-cycle frequency at moderate speeds).
+    const freq = 6.0 * w;
+    const phase = t * freq * 2 * Math.PI;
+
+    // Gait amplitudes (Mendes 2013, Berendes 2016, fly leg kinematics).
+    const COXA_AMP = 0.4;       // ±0.4 rad swing range
+    const FEMUR_LIFT = 0.35;    // 0.35 rad lift in swing
+
+    // Tripod groups: A = {T1L, T2R, T3L} swings together, B = the
+    // others — π out of phase.
+    for (const leg of Physics.LEG_KEYS) {
+      const acts = this.legActs[leg];
+      if (acts.coxa < 0) continue;
+      const isLeft = leg.endsWith("_left");
+      const tripodA = leg === "T1_left" || leg === "T2_right" || leg === "T3_left";
+      const p = tripodA ? phase : phase + Math.PI;
+      const swingNow = Math.sin(p) > 0;
+
+      // Turn modulation: ipsilateral side stride shorter, contra longer.
+      // turn > 0 → veer left → left legs slower (smaller stride).
+      const turnMod = isLeft ? (1 - tu * 0.5) : (1 + tu * 0.5);
+
+      // Coxa: forward-swing during swing phase, push-back during stance.
+      ctrl[acts.coxa] = COXA_AMP * w * turnMod * Math.sin(p);
+
+      // Femur: lift in swing only.
+      if (acts.femur >= 0) {
+        ctrl[acts.femur] = swingNow ? FEMUR_LIFT * w * Math.sin(p) : 0;
+      }
+      // Tibia stays at spring rest (ctrl = 0 → bias-driven default).
+      if (acts.tibia >= 0) ctrl[acts.tibia] = 0;
+
+      // Adhesion: 1 in stance (foot grips), 0 in swing (foot lifts
+      // free). Without this gating, walk drive can't lift legs.
+      if (acts.adhesion >= 0) {
+        ctrl[acts.adhesion] = swingNow ? 0.0 : 1.0;
+      }
     }
   }
 
