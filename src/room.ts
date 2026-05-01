@@ -355,9 +355,20 @@ export class Room {
   }
 
   private startLoop() {
-    const tick = () => {
+    let lastT = performance.now();
+    const tick = (now: number) => {
       this.rafId = requestAnimationFrame(tick);
-      if (this.physics && this.bodies.length) this.syncBodyTransforms();
+      const dtWall = (now - lastT) / 1000;
+      lastT = now;
+      if (this.physics && this.bodies.length) {
+        // flybody MJCF runs at dt=0.0001 s; step ~1/60 s of sim per
+        // render frame so motion looks ~realtime. With 67 bodies this
+        // costs a few ms per tick.
+        const target = Math.min(0.05, dtWall);
+        const subSteps = Math.max(1, Math.round(target / 0.0001));
+        this.physics.step(subSteps);
+        this.syncBodyTransforms();
+      }
       this.updateCameraFromOrbit();
       this.renderer.render(this.scene, this.camera);
     };

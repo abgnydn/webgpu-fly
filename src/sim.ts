@@ -13,19 +13,30 @@ export interface SimParams {
   vRest: number;         // mV
   refractoryMs: number;  // ms (rounded to integer steps)
   extGain: number;       // multiplier on ext_input buffer
+  wSyn: number;          // mV per synapse — Shiu et al 2024 free parameter (0.275 mV)
 }
 
+// Calibrated to Shiu et al. 2024 — "A Drosophila computational brain
+// model reveals sensorimotor processing", Nature 632:210–217.
+// github.com/philshiu/Drosophila_brain_model/model.py
+//   v_0 / v_rst = -52 mV  (Kakaria & de Bivort 2017)
+//   v_th        = -45 mV
+//   t_mbr       = 20 ms
+//   t_rfc       = 2.2 ms (Lazar et al)
+//   w_syn       = 0.275 mV / synapse (free parameter)
+// Their reset potential equals rest, NOT a deeper hyperpolarisation.
 export const DEFAULT_PARAMS: SimParams = {
   dtMs: 1.0,
   tauMs: 20.0,
-  vThresh: -50.0,
-  vReset: -70.0,
-  vRest: -65.0,
-  refractoryMs: 2.0,
-  extGain: 1.0,
+  vThresh: -45.0,
+  vReset: -52.0,
+  vRest: -52.0,
+  refractoryMs: 2.2,
+  extGain: 0.4,
+  wSyn: 0.275,
 };
 
-const PARAMS_BYTES = 32; // matches struct Params in lif.wgsl (8 × 4 bytes)
+const PARAMS_BYTES = 36; // matches struct Params in lif.wgsl (9 × 4 bytes)
 
 export class FlySim {
   readonly device: GPUDevice;
@@ -238,6 +249,7 @@ export class FlySim {
     dv.setUint32(20, refrSteps, true);
     dv.setFloat32(24, this.params.extGain, true);
     dv.setUint32(28, this.step_, true);
+    dv.setFloat32(32, this.params.wSyn, true);
     this.device.queue.writeBuffer(this.paramsBuf, 0, ab);
   }
 

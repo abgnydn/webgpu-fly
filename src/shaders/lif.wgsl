@@ -21,6 +21,7 @@ struct Params {
   refractory_steps : u32,
   ext_gain         : f32,
   step             : u32,
+  w_syn            : f32,   // Shiu 2024: 0.275 mV per synapse count
 };
 
 @group(0) @binding(0) var<uniform>             params      : Params;
@@ -45,7 +46,9 @@ fn step_lif(@builtin(global_invocation_id) gid : vec3<u32>) {
   let i = gid.x;
   if (i >= params.num_neurons) { return; }
 
-  // 1. Synaptic gather over incoming edges
+  // 1. Synaptic gather over incoming edges. weight[k] is the pre-signed
+  // synapse count from build_csr.py; multiplied here by w_syn (mV per
+  // synapse count, Shiu et al. 2024) so summed input is in mV.
   let row_start = row_ptr[i];
   let row_end   = row_ptr[i + 1u];
   var i_syn : f32 = 0.0;
@@ -53,6 +56,7 @@ fn step_lif(@builtin(global_invocation_id) gid : vec3<u32>) {
     let pre = col_idx[k];
     i_syn = i_syn + weight[k] * spike_bit(pre);
   }
+  i_syn = i_syn * params.w_syn;
 
   // 2. External drive
   let i_in = i_syn + ext_input[i] * params.ext_gain;

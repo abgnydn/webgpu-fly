@@ -247,7 +247,7 @@ async function main() {
     log("navigator.gpu missing — open in Chrome / Edge", "err");
     return;
   }
-  const sim = await FlySim.create(brain, { ...DEFAULT_PARAMS, extGain: 5.0 });
+  const sim = await FlySim.create(brain, { ...DEFAULT_PARAMS });
   log(`FlySim ready. dt=${sim.params.dtMs} ms  tau=${sim.params.tauMs} ms`);
   log("");
 
