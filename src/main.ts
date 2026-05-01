@@ -124,14 +124,15 @@ async function main() {
   const room = new Room({ container: roomContainer });
   const driveReadout = document.getElementById("drive-readout") as HTMLDivElement;
 
-  // Load MuJoCo physics in the background; until it lands, room falls back
-  // to the kinematic integrator. Don't block the brain init on it.
-  Physics.create()
-    .then((p) => {
-      room.attachPhysics(p);
-      log("MuJoCo physics ready (planar 3-DoF chassis)", "ok");
+  // Load real flybody MJCF in the background — fetches fruitfly.xml +
+  // 85 OBJ meshes, compiles via VFS, then asks the room to build its
+  // body graph. Don't block the brain init on it.
+  Physics.create((msg) => log(`flybody: ${msg}`))
+    .then(async (p) => {
+      await room.attachPhysics(p);
+      log(`flybody attached (${p.bodyCount} bodies)`, "ok");
     })
-    .catch((e) => log(`MuJoCo failed to load: ${(e as Error).message}`, "warn"));
+    .catch((e) => log(`flybody failed to load: ${(e as Error).message}`, "warn"));
 
   // Pre-bin DN indices by hemisphere using pos_x relative to brain centroid.
   // Left hemisphere = pos_x < cx (anatomical left when looking at the brain

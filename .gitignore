@@ -13,5 +13,9 @@ data/*.tsv
 public/brain.bin
 public/brain.meta.json
 
+# flybody assets — vendored from TuragaLab/flybody main (149 MB)
+public/flybody/*.obj
+public/flybody/meshes.txt
+
 # Snapshots
 snapshots/

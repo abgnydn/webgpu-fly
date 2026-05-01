@@ -1,31 +1,33 @@
-// room.ts — Three.js "3D room" with a procedural fly that walks under
-// neural drive. Not biomechanically real (no MuJoCo yet) — it's a visual
-// coupling that proves the brain-sim → embodiment chain.
+// room.ts — Three.js arena with the real TuragaLab flybody, posed each
+// frame by MuJoCo. Body geometry comes from the vendored OBJ meshes;
+// kinematics and contacts come from physics.ts.
 //
-// Drive contract: per snapshot, host code calls setDrive(forward, turn).
-//   forward in [-1, 1]  — backward to forward speed (units/sec)
-//   turn    in [-1, 1]  — left to right yaw rate (rad/sec)
+// Coordinate map: MuJoCo (x, y, z, z-up, cm) → Three.js (x, z, -y, y-up,
+// scaled by VISUAL_SCALE). The basis change has det=+1 so quaternions
+// pass through under the same axis swap.
 
 import * as THREE from "three";
-import { Physics } from "./physics";
+import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
+import { Physics, type BodyInfo, type FlybodyPose } from "./physics";
 
 export interface RoomOpts {
   container: HTMLElement;
   bg?: number;
 }
 
-const FLOOR_SIZE = 80;
-const ROOM_HEIGHT = 18;
+const FLOOR_SIZE = 12;            // shrunk to keep fly visible
+const ROOM_HEIGHT = 6;
+const VISUAL_SCALE = 10;          // MJ cm × 10 → TJ units; fly ≈ 30 TJ long
 
 export class Room {
   readonly scene = new THREE.Scene();
   readonly camera: THREE.PerspectiveCamera;
   readonly renderer: THREE.WebGLRenderer;
 
-  private fly: Fly;
+  private bodyGroups: THREE.Object3D[] = [];
+  private rootGroup = new THREE.Group();   // scaled root for the fly tree
   private physics: Physics | null = null;
   private rafId = 0;
-  private lastT = performance.now();
 
   // orbit state
   private isDragging = false;
@@ -34,7 +36,7 @@ export class Room {
   private elevation = 0.55;
   private radius = 28;
 
-  // commanded velocity
+  // commanded velocity (still smoothed in main, kept here for API parity).
   private forward = 0;
   private turn = 0;
 
@@ -49,10 +51,9 @@ export class Room {
     this.renderer.setClearColor(opts.bg ?? 0x0a0d12);
     container.appendChild(this.renderer.domElement);
 
-    this.camera = new THREE.PerspectiveCamera(40, w / h, 0.1, 500);
+    this.camera = new THREE.PerspectiveCamera(40, w / h, 0.05, 500);
     this.updateCameraFromOrbit();
 
-    // Lights: cool ambient + warm key from above-front
     this.scene.add(new THREE.AmbientLight(0x4a5a6e, 0.6));
     const key = new THREE.DirectionalLight(0xffd9a0, 1.1);
     key.position.set(8, 14, 6);
@@ -61,81 +62,119 @@ export class Room {
     fill.position.set(-6, 4, -8);
     this.scene.add(fill);
 
-    // Floor: large grid + a faint disc to anchor scale
-    const grid = new THREE.GridHelper(FLOOR_SIZE, 40, 0x2a3340, 0x1a2028);
+    const grid = new THREE.GridHelper(FLOOR_SIZE, 24, 0x2a3340, 0x1a2028);
     (grid.material as THREE.Material).transparent = true;
-    (grid.material as THREE.Material).opacity = 0.65;
+    (grid.material as THREE.Material).opacity = 0.55;
     this.scene.add(grid);
-
     const floor = new THREE.Mesh(
       new THREE.CircleGeometry(FLOOR_SIZE / 2, 64),
       new THREE.MeshBasicMaterial({ color: 0x10151c, transparent: true, opacity: 0.6 }),
     );
     floor.rotation.x = -Math.PI / 2;
-    floor.position.y = -0.01;
+    floor.position.y = -0.005;
     this.scene.add(floor);
 
-    // Faint cylinder "walls" so the camera has spatial reference
-    const wall = new THREE.Mesh(
-      new THREE.CylinderGeometry(FLOOR_SIZE / 2, FLOOR_SIZE / 2, ROOM_HEIGHT, 48, 1, true),
-      new THREE.MeshBasicMaterial({
-        color: 0x1a2230,
-        transparent: true,
-        opacity: 0.18,
-        side: THREE.BackSide,
-      }),
-    );
-    wall.position.y = ROOM_HEIGHT / 2;
-    this.scene.add(wall);
-
-    this.fly = new Fly();
-    this.scene.add(this.fly.group);
+    this.scene.add(this.rootGroup);
 
     this.attachInput();
     this.startLoop();
     window.addEventListener("resize", () => this.onResize(container));
   }
 
-  /** Attach a MuJoCo Physics instance. Once attached, body pose comes from physics; before that, kinematic fallback is used. */
-  attachPhysics(physics: Physics) {
+  /** Attach physics + build the fly's Three.js scene graph from its bodies. */
+  async attachPhysics(physics: Physics) {
     this.physics = physics;
+    await this.buildBodyGraph(physics.bodies);
   }
 
-  /** Push commanded velocity. Units: forward = body-lengths/sec; turn = rad/sec. */
   setDrive(forward: number, turn: number) {
     this.forward = forward;
     this.turn = turn;
   }
 
-  /** Reset fly to origin facing +Z, zero velocity. */
   resetFly() {
     this.physics?.reset();
-    this.fly.group.position.set(0, 0, 0);
-    this.fly.group.rotation.y = 0;
-    this.fly.gaitPhase = 0;
-    this.forward = 0;
-    this.turn = 0;
+  }
+
+  private async buildBodyGraph(bodies: BodyInfo[]) {
+    const objLoader = new OBJLoader();
+    // Cache mesh geometry so multiple bodies sharing a mesh share the geometry.
+    const meshCache = new Map<string, Promise<THREE.Group>>();
+    const fetchMesh = (file: string) => {
+      let p = meshCache.get(file);
+      if (!p) {
+        p = fetch(`/flybody/${file}`)
+          .then((r) => r.text())
+          .then((txt) => objLoader.parse(txt));
+        meshCache.set(file, p);
+      }
+      return p;
+    };
+
+    // Default material — warm fly-amber, lit.
+    const bodyMat = new THREE.MeshStandardMaterial({
+      color: 0xa07030,
+      roughness: 0.55,
+      metalness: 0.15,
+      emissive: 0x201005,
+      emissiveIntensity: 0.4,
+    });
+
+    // Pre-build all body Object3Ds so xpos/xquat can address them by id.
+    this.bodyGroups = bodies.map(() => new THREE.Object3D());
+    // Body 0 is worldbody; everything else parents to either world or to
+    // its MuJoCo parent. We'll place all bodies as direct children of the
+    // root scaled group and *write the world transform* each frame, since
+    // MuJoCo gives us xpos/xquat in world frame already. That sidesteps
+    // having to rebuild the parent hierarchy in three.js.
+    for (let i = 1; i < this.bodyGroups.length; i++) {
+      this.rootGroup.add(this.bodyGroups[i]);
+    }
+    // Apply visual scaling at the root so we don't scale per-body.
+    this.rootGroup.scale.setScalar(VISUAL_SCALE);
+
+    // Attach meshes asynchronously.
+    let loaded = 0, failed = 0;
+    await Promise.all(bodies.map(async (b) => {
+      if (b.id === 0) return; // worldbody has no visual
+      for (const file of b.meshFiles) {
+        try {
+          const src = await fetchMesh(file);
+          // OBJLoader returns a Group; clone children into our body
+          // Object3D so each body owns its own mesh transform.
+          src.traverse((obj) => {
+            if ((obj as THREE.Mesh).isMesh) {
+              const m = obj as THREE.Mesh;
+              const clone = new THREE.Mesh(m.geometry, bodyMat);
+              // flybody's <default> applies scale="0.1 0.1 0.1" to meshes.
+              clone.scale.setScalar(0.1);
+              this.bodyGroups[b.id].add(clone);
+            }
+          });
+          loaded++;
+        } catch {
+          failed++;
+        }
+      }
+    }));
+    console.log(`flybody meshes loaded: ${loaded} ok, ${failed} failed`);
   }
 
   private updateCameraFromOrbit() {
-    const tx = this.fly ? this.fly.group.position.x : 0;
-    const tz = this.fly ? this.fly.group.position.z : 0;
+    const tx = this.bodyGroups[1] ? this.bodyGroups[1].position.x * VISUAL_SCALE : 0;
+    const tz = this.bodyGroups[1] ? this.bodyGroups[1].position.z * VISUAL_SCALE : 0;
     const ce = Math.cos(this.elevation), se = Math.sin(this.elevation);
     const ca = Math.cos(this.azimuth), sa = Math.sin(this.azimuth);
-    // Orbit around the fly so it stays centred as it walks.
     this.camera.position.set(
       tx + this.radius * ce * sa,
-      this.radius * se + 2,
+      this.radius * se + 1,
       tz + this.radius * ce * ca,
     );
     this.camera.lookAt(tx, 1, tz);
   }
 
-  /** Modulate the fly's eye glow with brain activity (0..1). */
-  setEyeGlow(intensity: number) {
-    if (!this.fly) return;
-    this.fly.setEyeIntensity(intensity);
-  }
+  /** No-op for now; eyes were on the procedural fly. */
+  setEyeGlow(_intensity: number) { /* TODO: re-attach when we identify head body. */ }
 
   private attachInput() {
     const el = this.renderer.domElement;
@@ -161,7 +200,7 @@ export class Room {
     el.addEventListener("wheel", (e) => {
       e.preventDefault();
       this.radius *= Math.exp(e.deltaY * 0.001);
-      this.radius = Math.max(6, Math.min(80, this.radius));
+      this.radius = Math.max(2, Math.min(120, this.radius));
       this.updateCameraFromOrbit();
     }, { passive: false });
   }
@@ -175,174 +214,36 @@ export class Room {
   }
 
   private startLoop() {
-    const tick = (t: number) => {
+    const tick = () => {
       this.rafId = requestAnimationFrame(tick);
-      const dt = Math.min(0.05, (t - this.lastT) / 1000);
-      this.lastT = t;
-
-      const g = this.fly.group;
-      let speed: number;
-      if (this.physics) {
-        // Real-physics path: MuJoCo owns body pose. Basis change MJ→TJ is
-        // (x, y, z) → (x, z, -y), which has det=+1, so MJ yaw around +z
-        // passes straight through to TJ rotation around +y (no sign flip).
-        const pose = this.physics.step(this.forward, this.turn);
-        g.position.x = pose.x;
-        g.position.z = -pose.y;
-        g.rotation.y = pose.yaw;
-        speed = Math.abs(this.forward * 4.0);
-      } else {
-        // Fallback (pre-physics-load) — kinematic integration.
-        g.rotation.y += this.turn * dt;
-        speed = this.forward * 4.0;
-        g.position.x += Math.sin(g.rotation.y) * speed * dt;
-        g.position.z += Math.cos(g.rotation.y) * speed * dt;
-        const r = Math.hypot(g.position.x, g.position.z);
-        const lim = FLOOR_SIZE / 2 - 1.5;
-        if (r > lim) {
-          const k = lim / r;
-          g.position.x *= k;
-          g.position.z *= k;
-        }
-        speed = Math.abs(speed);
+      if (this.physics && this.bodyGroups.length > 1) {
+        const pose = this.physics.step();
+        this.applyPose(pose);
       }
-
-      this.fly.update(dt, speed);
       this.updateCameraFromOrbit();
       this.renderer.render(this.scene, this.camera);
     };
     requestAnimationFrame(tick);
   }
 
+  /** Map MuJoCo body poses (z-up cm) into the three.js scene (y-up). */
+  private applyPose(pose: FlybodyPose) {
+    const { xpos, xquat } = pose;
+    for (let i = 1; i < this.bodyGroups.length; i++) {
+      const obj = this.bodyGroups[i];
+      // pos: (x, y, z) → (x, z, -y)
+      obj.position.set(xpos[3 * i + 0], xpos[3 * i + 2], -xpos[3 * i + 1]);
+      // quat: MJ (w, x, y, z) → TJ axis-swap → (w, x, z, -y) → three (x, y, z, w)
+      const qw = xquat[4 * i + 0];
+      const qx = xquat[4 * i + 1];
+      const qy = xquat[4 * i + 2];
+      const qz = xquat[4 * i + 3];
+      obj.quaternion.set(qx, qz, -qy, qw);
+    }
+  }
+
   dispose() {
     cancelAnimationFrame(this.rafId);
     this.renderer.dispose();
-  }
-}
-
-// --- Fly: procedural body with tripod-gait legs ----------------------------
-class Fly {
-  readonly group = new THREE.Group();
-  gaitPhase = 0;
-
-  private legAnchors: THREE.Object3D[] = [];
-  private legTips: THREE.Mesh[] = [];
-  private legLines: THREE.Line[] = [];
-  private eyeMaterial!: THREE.MeshStandardMaterial;
-
-  setEyeIntensity(t: number) {
-    this.eyeMaterial.emissiveIntensity = 0.4 + 1.6 * Math.max(0, Math.min(1, t));
-  }
-
-  constructor() {
-    // Body — abdomen + thorax + head, slight gold glow
-    const bodyMat = new THREE.MeshStandardMaterial({
-      color: 0x9a6a2e, roughness: 0.35, metalness: 0.4,
-      emissive: 0x402010, emissiveIntensity: 0.4,
-    });
-    const abdo = new THREE.Mesh(new THREE.SphereGeometry(0.7, 24, 18), bodyMat);
-    abdo.scale.set(0.8, 0.65, 1.1);
-    abdo.position.set(0, 0.7, -0.7);
-    this.group.add(abdo);
-
-    const thorax = new THREE.Mesh(new THREE.SphereGeometry(0.55, 24, 18), bodyMat);
-    thorax.position.set(0, 0.8, 0.2);
-    this.group.add(thorax);
-
-    const head = new THREE.Mesh(
-      new THREE.SphereGeometry(0.4, 20, 14),
-      new THREE.MeshStandardMaterial({
-        color: 0x2a2a2a, roughness: 0.2, metalness: 0.6,
-      }),
-    );
-    head.position.set(0, 0.85, 0.95);
-    this.group.add(head);
-
-    // Eyes — big red compound eyes; emissiveIntensity is modulated by
-    // central-brain activity in setEyeIntensity().
-    this.eyeMaterial = new THREE.MeshStandardMaterial({
-      color: 0xff3a3a, emissive: 0x661010, emissiveIntensity: 0.4,
-      roughness: 0.3, metalness: 0.2,
-    });
-    for (const sx of [-1, 1]) {
-      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 12), this.eyeMaterial);
-      eye.position.set(0.32 * sx, 0.95, 1.0);
-      this.group.add(eye);
-    }
-
-    // Wings — translucent quads
-    const wingMat = new THREE.MeshStandardMaterial({
-      color: 0xeaf3ff, transparent: true, opacity: 0.18,
-      side: THREE.DoubleSide, roughness: 0.1, metalness: 0.0,
-    });
-    for (const sx of [-1, 1]) {
-      const wing = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 0.6), wingMat);
-      wing.position.set(0.6 * sx, 1.15, -0.2);
-      wing.rotation.set(-0.3, sx * 0.4, sx * -0.2);
-      this.group.add(wing);
-    }
-
-    // 6 legs: front/middle/rear × left/right
-    // Anchors sit on the thorax/abdomen ventrum; tips track a target on the floor.
-    const anchors: Array<[number, number, number]> = [
-      [-0.4, 0.55,  0.45], [ 0.4, 0.55,  0.45],   // front L/R
-      [-0.5, 0.50,  0.05], [ 0.5, 0.50,  0.05],   // middle L/R
-      [-0.5, 0.50, -0.45], [ 0.5, 0.50, -0.45],   // rear L/R
-    ];
-    const lineMat = new THREE.LineBasicMaterial({ color: 0x2a1a08 });
-    for (let i = 0; i < anchors.length; i++) {
-      const anchor = new THREE.Object3D();
-      anchor.position.set(...anchors[i]);
-      this.group.add(anchor);
-      this.legAnchors.push(anchor);
-
-      const tip = new THREE.Mesh(
-        new THREE.SphereGeometry(0.06, 8, 6),
-        new THREE.MeshStandardMaterial({ color: 0x1a1209, roughness: 0.5 }),
-      );
-      this.group.add(tip);
-      this.legTips.push(tip);
-
-      const lineGeo = new THREE.BufferGeometry();
-      lineGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(6), 3));
-      const line = new THREE.Line(lineGeo, lineMat);
-      this.group.add(line);
-      this.legLines.push(line);
-    }
-  }
-
-  /** Procedural tripod gait — three-and-three out of phase. dt sec, speed body-units/s. */
-  update(dt: number, speed: number) {
-    // Phase advances proportional to speed; freeze when essentially still.
-    if (speed < 0.05) return;
-    const stepHz = 2.0 + speed * 1.2;
-    this.gaitPhase = (this.gaitPhase + dt * stepHz * Math.PI * 2) % (Math.PI * 2);
-
-    // Tripod groups: {0, 3, 4} and {1, 2, 5}
-    const groupA = new Set([0, 3, 4]);
-    const stride = Math.min(1.0, 0.4 + speed * 0.4);
-
-    for (let i = 0; i < this.legAnchors.length; i++) {
-      const phaseOffset = groupA.has(i) ? 0 : Math.PI;
-      const ph = this.gaitPhase + phaseOffset;
-      const lift = Math.max(0, Math.sin(ph)) * 0.18;     // foot up during swing
-      const swing = Math.cos(ph) * 0.4 * stride;         // forward/back along z
-
-      const anchor = this.legAnchors[i];
-      // Foot target: outward from anchor, on floor, with stride along body z.
-      const sx = Math.sign(anchor.position.x);
-      const tx = anchor.position.x + sx * 0.55;
-      const tz = anchor.position.z + swing;
-      const ty = lift;
-
-      const tip = this.legTips[i];
-      tip.position.set(tx, ty, tz);
-
-      // Line segment from anchor → tip in local body space.
-      const arr = (this.legLines[i].geometry.getAttribute("position") as THREE.BufferAttribute).array as Float32Array;
-      arr[0] = anchor.position.x; arr[1] = anchor.position.y; arr[2] = anchor.position.z;
-      arr[3] = tx;                arr[4] = ty;               arr[5] = tz;
-      (this.legLines[i].geometry.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
-    }
   }
 }
