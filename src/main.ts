@@ -341,8 +341,9 @@ async function main() {
     const elapsed = performance.now() - t0;
     const totalSteps = N_SNAPSHOTS * STEPS_PER_SNAPSHOT;
     log(`${totalSteps} steps in ${elapsed.toFixed(0)} ms wall (${(elapsed / totalSteps).toFixed(2)} ms/step)`, "ok");
-    // Bring the fly to rest after the stim window ends.
-    for (let k = 0; k < 30; k++) { decayDrive(); await new Promise(r => setTimeout(r, 16)); }
+    // Drive persists at the stim's end-of-window value so the user
+    // can watch the body keep walking after the brain sim completes.
+    // Click another stim (or Spontaneous) to change it.
 
     // Per-class peak active count
     const peak = new Map<number, number>();
@@ -406,7 +407,6 @@ async function main() {
     }
     const elapsed = performance.now() - t0;
     log(`${N_SNAPSHOTS * STEPS_PER_SNAPSHOT} steps in ${elapsed.toFixed(0)} ms`, "ok");
-    for (let k = 0; k < 30; k++) { decayDrive(); await new Promise(r => setTimeout(r, 16)); }
 
     let recruited = 0;
     const last = viewer["snapshots"][viewer.numSnapshots - 1] as Float32Array;
