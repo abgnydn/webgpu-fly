@@ -361,7 +361,9 @@ export class Room {
         // Brain → VNC stand-in → body. Two motor primitives selected
         // by DN drive: tripod walk gait (amplitude = forward) and
         // wing-buzz hover (amplitude = remaining drive after walking).
-        const walkAmp = Math.min(1, Math.max(0, this.forward));
+        // sqrt boost so even modest DN drive (e.g., olfactory's ~0.1)
+        // produces a visible step, not a barely-perceptible shuffle.
+        const walkAmp = Math.min(1, Math.sqrt(Math.max(0, this.forward)));
         this.physics.driveLegs(walkAmp, this.turn);
         // Wings get a smaller buzz — secondary behavior unless the
         // fly is "trying to fly" (idle freq buzz when active).

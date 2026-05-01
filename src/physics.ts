@@ -262,15 +262,19 @@ export class Physics {
     const w = Math.max(0, Math.min(1, walk));
     const tu = Math.max(-1, Math.min(1, turn));
 
-    // Cycle frequency scales with drive — 0 Hz at rest (legs hold
-    // adhesion-locked stance), up to ~6 Hz at full forward drive
-    // (close to real fly walk-cycle frequency at moderate speeds).
-    const freq = 6.0 * w;
+    // Cycle frequency scales with √drive so even modest DN levels
+    // produce a visible cycle. Real fly walk freq is 5-15 Hz; we scale
+    // 0 Hz (rest) → ~10 Hz at full drive.
+    const drv = Math.sqrt(w);
+    const freq = 10.0 * drv;
     const phase = t * freq * 2 * Math.PI;
 
-    // Gait amplitudes (Mendes 2013, Berendes 2016, fly leg kinematics).
-    const COXA_AMP = 0.4;       // ±0.4 rad swing range
-    const FEMUR_LIFT = 0.35;    // 0.35 rad lift in swing
+    // Gait amplitudes pushed toward the high end of fly literature
+    // (Mendes 2013, Berendes 2016) so steps are visibly large at
+    // moderate drive. Coxa swing ~25° peak → 0.45 rad. Femur lift ~30°
+    // peak → 0.55 rad ensures foot clears the floor in swing phase.
+    const COXA_AMP = 0.55;
+    const FEMUR_LIFT = 0.55;
 
     // Tripod groups: A = {T1L, T2R, T3L} swings together, B = the
     // others — π out of phase.
@@ -296,11 +300,12 @@ export class Physics {
       // Tibia stays at spring rest (ctrl = 0 → bias-driven default).
       if (acts.tibia >= 0) ctrl[acts.tibia] = 0;
 
-      // Adhesion: 1 in stance (foot grips), 0 in swing (foot lifts
-      // free). Without this gating, walk drive can't lift legs.
-      if (acts.adhesion >= 0) {
-        ctrl[acts.adhesion] = swingNow ? 0.0 : 1.0;
-      }
+      // Adhesion stays at 1.0 always — when the leg is in swing the
+      // femur lift takes the foot off the floor, so adhesion is moot;
+      // when in stance, full adhesion gives max friction so the leg's
+      // backward sweep pushes the body forward instead of slipping.
+      // (Earlier 0/1 gating during swing was disrupting the cycle.)
+      if (acts.adhesion >= 0) ctrl[acts.adhesion] = 1.0;
     }
   }
 
