@@ -2,6 +2,7 @@
 // runs the step loop, exposes hooks for snapshot export.
 
 import lifWgsl from "./shaders/lif.wgsl?raw";
+import accumWgsl from "./shaders/accumulate.wgsl?raw";
 import type { Brain } from "./brain";
 
 export interface SimParams {
@@ -33,6 +34,8 @@ export class FlySim {
 
   private pipeline!: GPUComputePipeline;
   private clearPipeline!: GPUComputePipeline;
+  private accumPipeline!: GPUComputePipeline;
+  private clearAccumPipeline!: GPUComputePipeline;
   private bindGroup!: GPUBindGroup;
   private paramsBuf!: GPUBuffer;
   private rowPtrBuf!: GPUBuffer;
@@ -43,9 +46,12 @@ export class FlySim {
   private vmBuf!: GPUBuffer;
   private refracBuf!: GPUBuffer;
   private extBuf!: GPUBuffer;
+  private accumBuf!: GPUBuffer;    // per-neuron spike count over current window
 
   private bindAtoB!: GPUBindGroup; // gather reads A, writes B
   private bindBtoA!: GPUBindGroup; // gather reads B, writes A
+  private accumBindA!: GPUBindGroup; // accumulate reads spikesA
+  private accumBindB!: GPUBindGroup; // accumulate reads spikesB
 
   private step_ = 0;
   private prevIsA_ = true;
@@ -129,6 +135,12 @@ export class FlySim {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       label: "ext_input",
     });
+
+    this.accumBuf = device.createBuffer({
+      size: N * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+      label: "accum",
+    });
   }
 
   private initPipeline() {
@@ -179,6 +191,38 @@ export class FlySim {
     this.bindAtoB = mkBind(this.spikesA, this.spikesB);
     this.bindBtoA = mkBind(this.spikesB, this.spikesA);
     this.bindGroup = this.bindAtoB; // initial; flipped each step
+
+    // --- Accumulator pipeline (separate WGSL, separate layout) ---
+    const accumModule = device.createShaderModule({ code: accumWgsl, label: "accum" });
+    const accumLayout = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      ],
+    });
+    const accumPipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [accumLayout] });
+    this.accumPipeline = device.createComputePipeline({
+      layout: accumPipelineLayout,
+      compute: { module: accumModule, entryPoint: "accumulate_spikes" },
+      label: "accum.add",
+    });
+    this.clearAccumPipeline = device.createComputePipeline({
+      layout: accumPipelineLayout,
+      compute: { module: accumModule, entryPoint: "clear_accum" },
+      label: "accum.clear",
+    });
+    const mkAccumBind = (spikes: GPUBuffer) =>
+      device.createBindGroup({
+        layout: accumLayout,
+        entries: [
+          { binding: 0, resource: { buffer: this.paramsBuf } },
+          { binding: 1, resource: { buffer: spikes } },
+          { binding: 2, resource: { buffer: this.accumBuf } },
+        ],
+      });
+    this.accumBindA = mkAccumBind(this.spikesA);
+    this.accumBindB = mkAccumBind(this.spikesB);
   }
 
   private writeParams() {
@@ -251,30 +295,72 @@ export class FlySim {
   }
 
   /**
-   * Capture a snapshot: per-neuron spike counts accumulated across the next
-   * `windowSteps` steps. Call before stepping, then advance, then await the
-   * returned promise.
+   * Capture a snapshot: per-neuron spike counts over `windowSteps` steps,
+   * normalised to spikes-per-step in [0, 1].
    *
-   * Implementation: clear an accumulator buffer, run the steps, after each
-   * step OR the spike bitset into the accumulator (still on GPU), then
-   * read the accumulator back. Cheaper than reading per-step.
-   *
-   * Currently this just polls readSpikes() each step on the host — fine for
-   * snapshot intervals of ~10 steps. If we want per-step later, move the
-   * accumulation into a small WGSL kernel.
+   * All work runs in a single command encoder: clear accumulator → loop
+   * (clear_spikes, step_lif, accumulate_spikes) × windowSteps → copy accum
+   * to staging → submit → mapAsync. One queue submit, one readback.
    */
   async captureRollingRate(windowSteps: number): Promise<Float32Array> {
     const N = this.brain.header.numNeurons;
-    const rate = new Float32Array(N);
-    for (let s = 0; s < windowSteps; s++) {
-      this.step(1);
-      const bits = await this.readSpikes();
-      for (let i = 0; i < N; i++) {
-        if ((bits[i >>> 5] >>> (i & 31)) & 1) rate[i] += 1;
-      }
+    const nWg = Math.ceil(N / 64);
+    const nWgClear = Math.ceil(((N + 31) >>> 5) / 64);
+
+    this.writeParams();
+
+    const stage = this.device.createBuffer({
+      size: N * 4,
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      label: "accum_stage",
+    });
+
+    const enc = this.device.createCommandEncoder({ label: "captureRollingRate" });
+
+    // Clear accumulator using its own pipeline (works for any layout)
+    {
+      const pass = enc.beginComputePass();
+      pass.setBindGroup(0, this.accumBindA); // any accum bind group; clear ignores spikes binding
+      pass.setPipeline(this.clearAccumPipeline);
+      pass.dispatchWorkgroups(nWg);
+      pass.end();
     }
-    // normalise to spikes per step (0..1); host can convert to Hz with /dt
-    for (let i = 0; i < N; i++) rate[i] /= windowSteps;
+
+    for (let s = 0; s < windowSteps; s++) {
+      const stepBind = this.prevIsA_ ? this.bindAtoB : this.bindBtoA;
+      // After step, spikes_curr is the buffer that was just written to.
+      // If prev=A and we write to B, then after the step the new spikes are in B.
+      const accumBind = this.prevIsA_ ? this.accumBindB : this.accumBindA;
+
+      const stepPass = enc.beginComputePass();
+      stepPass.setBindGroup(0, stepBind);
+      stepPass.setPipeline(this.clearPipeline);
+      stepPass.dispatchWorkgroups(nWgClear);
+      stepPass.setPipeline(this.pipeline);
+      stepPass.dispatchWorkgroups(nWg);
+      stepPass.end();
+
+      const accumPass = enc.beginComputePass();
+      accumPass.setBindGroup(0, accumBind);
+      accumPass.setPipeline(this.accumPipeline);
+      accumPass.dispatchWorkgroups(nWg);
+      accumPass.end();
+
+      this.prevIsA_ = !this.prevIsA_;
+      this.step_++;
+    }
+
+    enc.copyBufferToBuffer(this.accumBuf, 0, stage, 0, N * 4);
+    this.device.queue.submit([enc.finish()]);
+
+    await stage.mapAsync(GPUMapMode.READ);
+    const counts = new Uint32Array(stage.getMappedRange().slice(0));
+    stage.unmap();
+    stage.destroy();
+
+    const rate = new Float32Array(N);
+    const inv = 1 / windowSteps;
+    for (let i = 0; i < N; i++) rate[i] = counts[i] * inv;
     return rate;
   }
 

@@ -67,7 +67,12 @@ export class FlyViewer {
     }
 
     const colors = new Float32Array(N * 3);
-    colors.fill(0.18); // dim grey baseline
+    // very dim baseline — inactive neurons blend with the bg under additive
+    for (let i = 0; i < N; i++) {
+      colors[3 * i] = 0.015;
+      colors[3 * i + 1] = 0.015;
+      colors[3 * i + 2] = 0.025;
+    }
 
     const geom = new THREE.BufferGeometry();
     geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
@@ -78,7 +83,7 @@ export class FlyViewer {
       size: opts.pointSize ?? 800,
       vertexColors: true,
       transparent: true,
-      opacity: 0.85,
+      opacity: 1.0,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
     });
@@ -166,13 +171,28 @@ export class FlyViewer {
     this.currentIdx = idx;
     const r = this.snapshots[idx];
     const colors = this.colorAttr.array as Float32Array;
-    // Magma-ish ramp: low = dim blue/grey, high = orange/red
+    // Magma-ish 3-stop ramp with sqrt-amplified rate. Inactive neurons sit
+    // near black (additive blending → invisible); active ones blaze hot.
+    //   0.0 → (0.015, 0.015, 0.025)  near-black ghost
+    //   0.5 → (0.55, 0.10, 0.40)     magenta
+    //   1.0 → (1.00, 0.85, 0.50)     bright yellow-orange
     for (let i = 0; i < r.length; i++) {
-      const t = Math.min(1, r[i] * 4); // amplify; rates are typically 0..0.05
-      // simple two-stop gradient: (0.10, 0.13, 0.20) → (1.00, 0.55, 0.20)
-      colors[3 * i]     = 0.10 + t * (1.00 - 0.10);
-      colors[3 * i + 1] = 0.13 + t * (0.55 - 0.13);
-      colors[3 * i + 2] = 0.20 + t * (0.20 - 0.20);
+      const t = Math.min(1, Math.sqrt(r[i] * 20));
+      let cr: number, cg: number, cb: number;
+      if (t < 0.5) {
+        const u = t * 2;
+        cr = 0.015 + u * (0.55 - 0.015);
+        cg = 0.015 + u * (0.10 - 0.015);
+        cb = 0.025 + u * (0.40 - 0.025);
+      } else {
+        const u = (t - 0.5) * 2;
+        cr = 0.55 + u * (1.00 - 0.55);
+        cg = 0.10 + u * (0.85 - 0.10);
+        cb = 0.40 + u * (0.50 - 0.40);
+      }
+      colors[3 * i]     = cr;
+      colors[3 * i + 1] = cg;
+      colors[3 * i + 2] = cb;
     }
     this.colorAttr.needsUpdate = true;
   }
