@@ -56,20 +56,29 @@ export class Physics {
     onProgress?.(`fetching ${meshFiles.length} meshes`);
 
     p.vfs = new p.mujoco.MjVFS();
-    // Parallel fetch with bounded concurrency so the browser's HTTP
-    // queue doesn't choke. flybody is 149 MB across 85 files — the dev
-    // server is local but it still saturates if we let all 85 fly.
-    const CONCURRENCY = 8;
-    let inFlight = 0, idx = 0;
+    // Parallel fetch with bounded concurrency. Lower than 8 so vite's
+    // HTTP/1.1 dev server doesn't queue. Progress is reported per
+    // completed file so the brain log shows the fetch is alive.
+    const CONCURRENCY = 4;
+    let inFlight = 0, idx = 0, completed = 0, totalBytes = 0;
+    const t0 = performance.now();
     await new Promise<void>((resolve, reject) => {
       const next = () => {
         while (inFlight < CONCURRENCY && idx < meshFiles.length) {
           const file = meshFiles[idx++];
           inFlight++;
           fetch(`/flybody/${file}`)
-            .then((r) => r.arrayBuffer())
+            .then((r) => {
+              if (!r.ok) throw new Error(`${file}: HTTP ${r.status}`);
+              return r.arrayBuffer();
+            })
             .then((buf) => {
               p.vfs.addBuffer(file, new Uint8Array(buf));
+              completed++;
+              totalBytes += buf.byteLength;
+              if (completed % 20 === 0 || completed === meshFiles.length) {
+                onProgress?.(`fetched ${completed}/${meshFiles.length} meshes (${(totalBytes / 1e6).toFixed(0)} MB)`);
+              }
               inFlight--;
               if (idx >= meshFiles.length && inFlight === 0) resolve();
               else next();
@@ -79,9 +88,12 @@ export class Physics {
       };
       next();
     });
+    onProgress?.(`fetched all meshes in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
 
-    onProgress?.("compiling MJCF");
+    onProgress?.("compiling MJCF (synchronous; tab may freeze ~5-15s)");
+    const tCompile = performance.now();
     p.model = p.mujoco.MjModel.from_xml_string(xmlText, p.vfs);
+    onProgress?.(`MJCF compiled in ${((performance.now() - tCompile) / 1000).toFixed(1)} s`);
     p.data = new p.mujoco.MjData(p.model);
     p.nbody = p.model.nbody;
 
