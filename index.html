@@ -5,23 +5,48 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>webgpu-fly</title>
     <style>
-      body {
-        margin: 0;
-        background: #0a0a0a;
-        color: #e6e6e6;
-        font: 14px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", monospace;
-        padding: 24px;
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: #06070a; color: #e6e6e6; font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", monospace; }
+      #app { display: grid; grid-template-columns: 380px 1fr; height: 100vh; }
+      #side { padding: 18px; overflow-y: auto; border-right: 1px solid #1a1c20; }
+      #side h1 { font-size: 14px; margin: 0 0 12px; letter-spacing: 0.04em; text-transform: uppercase; color: #9ad7ff; }
+      #out { white-space: pre-wrap; font-size: 12px; color: #c2c5ca; }
+      #out .ok { color: #6cd28a; }
+      #out .warn { color: #f5c542; }
+      #out .err { color: #ff6b6b; }
+      #stage { position: relative; }
+      #canvas-container { position: absolute; inset: 0; }
+      #controls {
+        position: absolute; left: 0; right: 0; bottom: 0;
+        padding: 12px 18px;
+        background: linear-gradient(180deg, transparent, rgba(6,7,10,0.85));
+        display: flex; align-items: center; gap: 12px;
       }
-      pre { white-space: pre-wrap; }
-      .ok { color: #6cd28a; }
-      .warn { color: #f5c542; }
-      .err { color: #ff6b6b; }
+      #controls input[type="range"] { flex: 1; }
+      #controls button {
+        background: #1a2735; color: #9ad7ff; border: 1px solid #2a3a4d;
+        padding: 6px 14px; border-radius: 4px; cursor: pointer; font: inherit;
+      }
+      #controls button:hover { background: #25364a; }
+      #frame-label { min-width: 110px; font-variant-numeric: tabular-nums; color: #9ad7ff; }
     </style>
   </head>
   <body>
-    <h1>webgpu-fly</h1>
-    <p>Loading brain.bin and inspecting&hellip;</p>
-    <pre id="out"></pre>
+    <div id="app">
+      <aside id="side">
+        <h1>webgpu-fly</h1>
+        <pre id="out"></pre>
+      </aside>
+      <main id="stage">
+        <div id="canvas-container"></div>
+        <div id="controls" hidden>
+          <button id="play">▶</button>
+          <input id="scrub" type="range" min="0" max="0" value="0" />
+          <span id="frame-label">snap 0 / 0</span>
+        </div>
+      </main>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

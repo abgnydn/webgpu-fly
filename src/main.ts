@@ -1,9 +1,9 @@
-// main.ts — load brain.bin, run a short LIF burst, report rates per super_class.
+// main.ts — load brain.bin, run an LIF burst, capture snapshots, feed viewer.
 
 import { loadBrain, type Brain } from "./brain";
 import { FlySim, DEFAULT_PARAMS } from "./sim";
+import { FlyViewer } from "./viewer";
 
-// Mirrors SUPER_CLASS_TABLE in tools/build_csr.py
 const SUPER_CLASS = [
   "unknown", "sensory", "ascending", "intrinsic", "central",
   "descending", "motor", "endocrine", "visual_centrifugal",
@@ -18,32 +18,7 @@ function log(msg: string, cls: "ok" | "warn" | "err" | "" = "") {
   out.appendChild(span);
 }
 
-function topologyStats(brain: Brain) {
-  const N = brain.header.numNeurons;
-  const inDeg = new Uint32Array(N);
-  for (let i = 0; i < N; i++) inDeg[i] = brain.rowPtr[i + 1] - brain.rowPtr[i];
-  const outDeg = new Uint32Array(N);
-  for (let k = 0; k < brain.colIdx.length; k++) outDeg[brain.colIdx[k]]++;
-  const stat = (a: Uint32Array) => {
-    let sum = 0, max = 0, nz = 0;
-    for (let i = 0; i < a.length; i++) { sum += a[i]; if (a[i] > max) max = a[i]; if (a[i] > 0) nz++; }
-    return { mean: sum / a.length, max, nonzero: nz };
-  };
-  return { in: stat(inDeg), out: stat(outDeg) };
-}
-
-function countSpikesPerClass(spikeBits: Uint32Array, superClass: Uint32Array): Map<number, number> {
-  const counts = new Map<number, number>();
-  for (let i = 0; i < superClass.length; i++) {
-    const w = spikeBits[i >>> 5];
-    if ((w >>> (i & 31)) & 1) {
-      counts.set(superClass[i], (counts.get(superClass[i]) ?? 0) + 1);
-    }
-  }
-  return counts;
-}
-
-function classSizes(superClass: Uint32Array): Map<number, number> {
+function classSizes(superClass: Uint32Array) {
   const m = new Map<number, number>();
   for (let i = 0; i < superClass.length; i++) m.set(superClass[i], (m.get(superClass[i]) ?? 0) + 1);
   return m;
@@ -64,12 +39,6 @@ async function main() {
   log(`magic OK, version ${header.version}`, "ok");
   log(`neurons : ${header.numNeurons.toLocaleString()}`);
   log(`edges   : ${header.numEdges.toLocaleString()}`);
-  log("");
-
-  log("--- topology ---");
-  const t = topologyStats(brain);
-  log(`in-degree  mean=${t.in.mean.toFixed(1)}  max=${t.in.max}  with-input=${t.in.nonzero.toLocaleString()}`);
-  log(`out-degree mean=${t.out.mean.toFixed(1)}  max=${t.out.max}  with-output=${t.out.nonzero.toLocaleString()}`);
 
   let pos = 0, neg = 0, zero = 0;
   for (let i = 0; i < header.numNeurons; i++) {
@@ -78,75 +47,108 @@ async function main() {
     else zero++;
   }
   log(`NT signs   exc=${pos.toLocaleString()}  inh=${neg.toLocaleString()}  silent=${zero.toLocaleString()}`);
-
-  const sizes = classSizes(neurons.superClass);
-  log("super_class breakdown:");
-  for (const [cls, n] of [...sizes.entries()].sort((a, b) => b[1] - a[1])) {
-    log(`  ${SUPER_CLASS[cls] ?? cls.toString()}: ${n.toLocaleString()}`);
-  }
   log("");
 
-  log("--- WebGPU adapter ---");
+  // --- Boot viewer with the static neuron cloud ---
+  const container = document.getElementById("canvas-container") as HTMLDivElement;
+  const viewer = new FlyViewer(brain, { container, pointSize: 1200 });
+  log("viewer ready — drag to rotate, wheel to zoom", "ok");
+  log("");
+
+  // --- WebGPU + sim ---
   if (!("gpu" in navigator)) {
     log("navigator.gpu missing — open in Chrome / Edge", "err");
     return;
   }
-  const adapter = await navigator.gpu.requestAdapter();
-  if (!adapter) { log("no GPU adapter", "err"); return; }
-  log(`maxStorageBufferBindingSize: ${adapter.limits.maxStorageBufferBindingSize.toLocaleString()}`);
-  log(`maxBufferSize:               ${adapter.limits.maxBufferSize.toLocaleString()}`);
-  const need = brain.colIdx.byteLength;
-  log(`largest CSR buffer needs:    ${need.toLocaleString()}`);
-  if (need > adapter.limits.maxStorageBufferBindingSize) {
-    log("WARN: buffer too big for default limits — sim.ts requests adapter-max", "warn");
-  }
-  log("");
 
-  // --- Build sim, drive it, measure rates ---
-  log("--- LIF sim ---");
   const sim = await FlySim.create(brain, {
     ...DEFAULT_PARAMS,
-    extGain: 5.0, // boost so Poisson input actually pushes neurons over threshold
+    extGain: 5.0,
   });
-  log(`FlySim created. dt=${sim.params.dtMs} ms  tau=${sim.params.tauMs} ms`);
+  log(`FlySim ready. dt=${sim.params.dtMs} ms  tau=${sim.params.tauMs} ms`);
 
-  // Drive sensory + optic neurons with Poisson @ ~50 Hz
-  // expected spikes per step = 50 Hz * 0.001 s = 0.05; we stamp current proportional.
+  // Drive sensory + optic with Poisson @ 50 Hz
   const ext = new Float32Array(header.numNeurons);
-  const RATE_HZ = 50;
-  const dtSec = sim.params.dtMs / 1000;
-  const expectedPerStep = RATE_HZ * dtSec;
   let driven = 0;
   for (let i = 0; i < header.numNeurons; i++) {
     const sc = SUPER_CLASS[neurons.superClass[i]];
     if (sc === "sensory" || sc === "optic") {
-      ext[i] = expectedPerStep * 8.0; // amplitude in mV-like units; tuned heuristically
+      ext[i] = 0.4; // tuned heuristically; rate * gain * mV
       driven++;
     }
   }
   sim.setExternalInput(ext);
-  log(`driving ${driven.toLocaleString()} sensory+optic neurons at ${RATE_HZ} Hz`);
-
-  const N_STEPS = 100;
-  log(`running ${N_STEPS} steps (= ${(N_STEPS * sim.params.dtMs).toFixed(0)} ms biological time) ...`);
-  const t0 = performance.now();
-  sim.step(N_STEPS);
-  const spikes = await sim.readSpikes(); // forces sync via mapAsync
-  const elapsedMs = performance.now() - t0;
-
-  const counts = countSpikesPerClass(spikes, neurons.superClass);
-  log(`wall time: ${elapsedMs.toFixed(1)} ms  (${(elapsedMs / N_STEPS).toFixed(2)} ms/step)`, "ok");
-  log(`real-time ratio: ${(N_STEPS * sim.params.dtMs / elapsedMs).toFixed(2)}× biological`);
+  log(`driving ${driven.toLocaleString()} sensory+optic neurons`);
   log("");
 
-  let totalActive = 0;
-  for (const v of counts.values()) totalActive += v;
-  log(`active in last step: ${totalActive.toLocaleString()} / ${header.numNeurons.toLocaleString()} (${(100 * totalActive / header.numNeurons).toFixed(2)}%)`);
-  log("active per super_class (last-step snapshot):");
-  for (const [cls, n] of [...counts.entries()].sort((a, b) => b[1] - a[1])) {
-    const total = sizes.get(cls) ?? 1;
-    log(`  ${SUPER_CLASS[cls] ?? cls}: ${n.toLocaleString()} / ${total.toLocaleString()} (${(100 * n / total).toFixed(2)}%)`);
+  // --- Capture snapshots ---
+  const N_SNAPSHOTS = 60;        // 60 frames × 10 ms = 600 ms biological time
+  const STEPS_PER_SNAPSHOT = 10; // 10 ms biological per snapshot at dt=1 ms
+
+  log(`capturing ${N_SNAPSHOTS} snapshots × ${STEPS_PER_SNAPSHOT} steps each`);
+  log(`(= ${N_SNAPSHOTS * STEPS_PER_SNAPSHOT} ms biological time, ${(N_SNAPSHOTS * STEPS_PER_SNAPSHOT * sim.params.dtMs).toFixed(0)} ms wall-clock target)`);
+
+  const sizes = classSizes(neurons.superClass);
+  const t0 = performance.now();
+  for (let s = 0; s < N_SNAPSHOTS; s++) {
+    const rate = await sim.captureRollingRate(STEPS_PER_SNAPSHOT);
+    viewer.pushSnapshot(rate);
+
+    // Quick stats every 10 snapshots
+    if (s % 10 === 0 || s === N_SNAPSHOTS - 1) {
+      const counts = new Map<number, number>();
+      let totalActive = 0;
+      for (let i = 0; i < rate.length; i++) {
+        if (rate[i] > 0) {
+          counts.set(neurons.superClass[i], (counts.get(neurons.superClass[i]) ?? 0) + 1);
+          totalActive++;
+        }
+      }
+      log(`snap ${s.toString().padStart(2)}/${N_SNAPSHOTS}: ${totalActive.toLocaleString()} active (${(100 * totalActive / header.numNeurons).toFixed(1)}%)`);
+    }
   }
+  const elapsed = performance.now() - t0;
+  log("", );
+  log(`done in ${elapsed.toFixed(0)} ms wall (${(elapsed / (N_SNAPSHOTS * STEPS_PER_SNAPSHOT)).toFixed(2)} ms/step)`, "ok");
+  log(`real-time ratio: ${(N_SNAPSHOTS * STEPS_PER_SNAPSHOT * sim.params.dtMs / elapsed).toFixed(2)}× biological`);
+  log("");
+  log("use scrub bar to step through time, ▶ to autoplay", "ok");
+
+  // --- Wire up controls ---
+  const controls = document.getElementById("controls") as HTMLDivElement;
+  const scrub = document.getElementById("scrub") as HTMLInputElement;
+  const playBtn = document.getElementById("play") as HTMLButtonElement;
+  const label = document.getElementById("frame-label") as HTMLSpanElement;
+
+  controls.hidden = false;
+  scrub.max = String(N_SNAPSHOTS - 1);
+  scrub.value = "0";
+  label.textContent = `snap 0 / ${N_SNAPSHOTS}`;
+
+  scrub.addEventListener("input", () => {
+    const idx = Number(scrub.value);
+    viewer.setAutoplay(false);
+    playBtn.textContent = "▶";
+    viewer.applySnapshot(idx);
+    const ms = idx * STEPS_PER_SNAPSHOT * sim.params.dtMs;
+    label.textContent = `snap ${idx} / ${N_SNAPSHOTS}  (t=${ms.toFixed(0)} ms)`;
+  });
+
+  let playing = false;
+  playBtn.addEventListener("click", () => {
+    playing = !playing;
+    viewer.setAutoplay(playing);
+    playBtn.textContent = playing ? "⏸" : "▶";
+  });
+
+  // sync scrub bar to viewer's auto-advancing index
+  setInterval(() => {
+    if (playing) {
+      scrub.value = String(viewer.current);
+      const ms = viewer.current * STEPS_PER_SNAPSHOT * sim.params.dtMs;
+      label.textContent = `snap ${viewer.current} / ${N_SNAPSHOTS}  (t=${ms.toFixed(0)} ms)`;
+    }
+  }, 50);
 }
 
 main().catch((e) => log(`uncaught: ${(e as Error).stack ?? e}`, "err"));

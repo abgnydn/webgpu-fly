@@ -250,6 +250,34 @@ export class FlySim {
     return out;
   }
 
+  /**
+   * Capture a snapshot: per-neuron spike counts accumulated across the next
+   * `windowSteps` steps. Call before stepping, then advance, then await the
+   * returned promise.
+   *
+   * Implementation: clear an accumulator buffer, run the steps, after each
+   * step OR the spike bitset into the accumulator (still on GPU), then
+   * read the accumulator back. Cheaper than reading per-step.
+   *
+   * Currently this just polls readSpikes() each step on the host — fine for
+   * snapshot intervals of ~10 steps. If we want per-step later, move the
+   * accumulation into a small WGSL kernel.
+   */
+  async captureRollingRate(windowSteps: number): Promise<Float32Array> {
+    const N = this.brain.header.numNeurons;
+    const rate = new Float32Array(N);
+    for (let s = 0; s < windowSteps; s++) {
+      this.step(1);
+      const bits = await this.readSpikes();
+      for (let i = 0; i < N; i++) {
+        if ((bits[i >>> 5] >>> (i & 31)) & 1) rate[i] += 1;
+      }
+    }
+    // normalise to spikes per step (0..1); host can convert to Hz with /dt
+    for (let i = 0; i < N; i++) rate[i] /= windowSteps;
+    return rate;
+  }
+
   /** Read back per-neuron Vm — async. */
   async readVm(): Promise<Float32Array> {
     const N = this.brain.header.numNeurons;
