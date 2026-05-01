@@ -126,11 +126,15 @@ export class Room {
         }
       });
       if (merged) {
-        // flybody's <default> applies scale="0.1 0.1 0.1" to all meshes.
-        // Bake that into the geometry once so the mjvGeom transform from
-        // mjv_updateScene is correctly placed.
-        (merged as THREE.BufferGeometry).scale(0.1, 0.1, 0.1);
-        this.meshGeomById.set(id, merged);
+        const g = merged as THREE.BufferGeometry;
+        // MuJoCo auto-shifts each mesh so its geometric (bbox) centre is
+        // at the mesh-reference-frame origin — see MJCF <mesh> docs. We
+        // mirror that here, then bake in the MJCF default scale="0.1
+        // 0.1 0.1". Without the centering, every body part is offset
+        // by its OBJ centroid and the fly looks exploded.
+        g.center();
+        g.scale(0.1, 0.1, 0.1);
+        this.meshGeomById.set(id, g);
       }
     }
   }
