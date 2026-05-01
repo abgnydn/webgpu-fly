@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+
+# Raw data — too large for git (download via tools/download_data.sh)
+data/raw/
+data/*.feather
+data/*.npy
+data/*.tsv
+
+# Built brain blob — regenerable via tools/build_csr.py
+public/brain.bin
+public/brain.meta.json
+
+# Snapshots
+snapshots/

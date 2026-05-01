@@ -1,0 +1,20 @@
+{
+  "name": "webgpu-fly",
+  "version": "0.1.0",
+  "description": "Realtime LIF simulation of the FlyWire whole-brain connectome on WebGPU.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "typecheck": "tsc --noEmit",
+    "data": "bash tools/download_data.sh",
+    "convert": ".venv/bin/python tools/build_csr.py"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@webgpu/types": "^0.1.69",
+    "typescript": "^6.0.2",
+    "vite": "^8.0.8"
+  }
+}
