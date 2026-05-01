@@ -113,6 +113,20 @@ async function main() {
     else if (neurons.sign[i] < 0) neg++;
   }
   log(`exc=${pos.toLocaleString()}  inh=${neg.toLocaleString()}`);
+
+  // Load famous-DN index map from brain.meta.json. These are
+  // descending neurons whose behavioural roles are documented in the
+  // fly literature (DNa01 = forward, DNb01 = backward "moonwalker",
+  // DNp01 = giant-fiber escape, etc.). Clicking a famous-DN button
+  // single-stims those neurons and lets the connectome's wiring
+  // determine the resulting behaviour — no hardcoded motor mapping.
+  let famousDns: Record<string, number[]> = {};
+  let famousDnLabels: Record<string, string> = {};
+  try {
+    const meta = await (await fetch("/brain.meta.json")).json();
+    famousDns = meta.famous_dns ?? {};
+    famousDnLabels = meta.famous_dn_descriptions ?? {};
+  } catch {}
   log("");
 
   const container = document.getElementById("canvas-container") as HTMLDivElement;
@@ -268,6 +282,33 @@ async function main() {
     buttons.push(btn);
   }
 
+  // --- Famous-DN buttons: literature-documented descending neurons ---
+  // Each button stims both L and R copies. Behaviour comes from the
+  // connectome's existing wiring — we don't hand-pick a motor mapping.
+  if (Object.keys(famousDns).length) {
+    const dnSection = document.createElement("div");
+    dnSection.style.marginTop = "10px";
+    const h = document.createElement("h2");
+    h.style.cssText = "margin: 0 0 6px 0; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: #6c7480";
+    h.textContent = "Famous DNs";
+    dnSection.appendChild(h);
+    const dnRow = document.createElement("div");
+    dnRow.id = "dn-row";
+    dnRow.style.cssText = "display: flex; flex-wrap: wrap; gap: 6px";
+    dnSection.appendChild(dnRow);
+    stimRow.parentElement?.appendChild(dnSection);
+
+    for (const [name, idxs] of Object.entries(famousDns)) {
+      const btn = document.createElement("button");
+      btn.className = "stim-btn";
+      const desc = famousDnLabels[name] ?? "";
+      btn.innerHTML = `<span class="label">${name}</span><span class="hint">${desc}</span>`;
+      btn.addEventListener("click", () => runDnStim(name, idxs, btn));
+      dnRow.appendChild(btn);
+      buttons.push(btn);
+    }
+  }
+
   // --- Wire scrub + play + record ---
   const controls = document.getElementById("controls") as HTMLDivElement;
   const scrub = document.getElementById("scrub") as HTMLInputElement;
@@ -383,6 +424,53 @@ async function main() {
     viewer.setAutoplay(true);
     playBtn.textContent = "⏸";
 
+    buttons.forEach((b) => { b.disabled = false; });
+    busy = false;
+  }
+
+  // --- Famous-DN stim: drive both L+R copies of a named DN ---
+  async function runDnStim(name: string, idxs: number[], btn: HTMLButtonElement) {
+    if (busy) return;
+    busy = true;
+    buttons.forEach((b) => { b.disabled = true; b.classList.remove("active"); });
+    btn.classList.add("active");
+    controls.hidden = true;
+
+    log("");
+    log(`--- DN stim: ${name} (${idxs.length} neurons, ${famousDnLabels[name] ?? ""}) ---`, "ok");
+    const ext = new Float32Array(header.numNeurons);
+    for (const idx of idxs) ext[idx] = 1.5;   // strong pulse
+    sim.reset();
+    sim.setExternalInput(ext);
+    viewer.clearSnapshots();
+    if (idxs.length > 0) viewer.highlightNeuron(idxs[0]);
+    room.resetFly();
+
+    const t0 = performance.now();
+    for (let s = 0; s < N_SNAPSHOTS; s++) {
+      const rate = await sim.captureRollingRate(STEPS_PER_SNAPSHOT);
+      viewer.pushSnapshot(rate);
+      applyDriveFromSnapshot(rate);
+    }
+    const elapsed = performance.now() - t0;
+    log(`${N_SNAPSHOTS * STEPS_PER_SNAPSHOT} steps in ${elapsed.toFixed(0)} ms`, "ok");
+
+    let recruited = 0;
+    const last = viewer["snapshots"][viewer.numSnapshots - 1] as Float32Array;
+    for (let i = 0; i < last.length; i++) if (last[i] > 0) recruited++;
+    log(`final-window recruits: ${recruited.toLocaleString()} / ${header.numNeurons.toLocaleString()}`);
+    if (recruited > 100) {
+      const snaps = [...Array(viewer.numSnapshots)].map((_, j) => viewer["snapshots"][j] as Float32Array);
+      logHeroValidation(snaps);
+    }
+
+    scrub.max = String(viewer.numSnapshots - 1);
+    scrub.value = "0";
+    label.textContent = `snap 0 / ${viewer.numSnapshots}  (t=0 ms)`;
+    controls.hidden = false;
+    playing = true;
+    viewer.setAutoplay(true);
+    playBtn.textContent = "⏸";
     buttons.forEach((b) => { b.disabled = false; });
     busy = false;
   }

@@ -306,6 +306,33 @@ def main() -> int:
     size_bytes = OUT_BIN.stat().st_size
     print(f"      {size_bytes / 1e6:.1f} MB written")
 
+    # Famous descending neurons with documented behavioural roles. Map
+    # cell_type label → list of dense neuron indices. Used by the
+    # frontend to add per-DN stim buttons whose effect maps to a known
+    # motor program.
+    famous_dns: dict[str, list[int]] = {}
+    famous_labels = {
+        "DNa01": "forward walking (Cande et al. 2018)",
+        "DNa02": "forward walking, faster (Bidaye et al.)",
+        "DNb01": "backward walking — 'moonwalker' (Bidaye 2014)",
+        "DNp01": "Giant Fiber — escape jump (Wyman 1984)",
+        "DNg13": "turning",
+    }
+    cell_type_col = ann["cell_type"] if "cell_type" in ann.columns else None
+    if cell_type_col is not None:
+        for label in famous_labels:
+            mask = cell_type_col == label
+            if not mask.any():
+                continue
+            root_ids_for_label = ann[mask].index.to_numpy()
+            idxs = [
+                int(id_to_idx[int(r)])
+                for r in root_ids_for_label
+                if int(r) in id_to_idx
+            ]
+            if idxs:
+                famous_dns[label] = idxs
+
     meta = {
         "version": 1,
         "num_neurons": n_neurons,
@@ -319,6 +346,8 @@ def main() -> int:
         },
         "super_class_table": SUPER_CLASS_TABLE,
         "hero_cell_types": HERO_CELL_TYPES,
+        "famous_dns": famous_dns,
+        "famous_dn_descriptions": famous_labels,
     }
     OUT_META.write_text(json.dumps(meta, indent=2))
     print(f"      {OUT_META.name} written")
