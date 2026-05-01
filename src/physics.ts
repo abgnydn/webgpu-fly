@@ -41,10 +41,19 @@ export class Physics {
 
     // Inject a floor + top light into the body-only fruitfly.xml so the
     // fly has somewhere to land and the right pane gets some sky light.
+    // Floor + skybox + grid material lifted from flybody's own
+    // build_fruitfly/floor.xml (TuragaLab, github), with the same z=-0.15
+    // floor offset so the canonical _SPAWN_POS=(0,0,0.1278) stands cleanly.
+    xmlText = xmlText.replace(
+      "<asset>",
+      `<asset>
+        <texture name="floor_grid" type="2d" builtin="checker" rgb1=".1 .2 .3" rgb2=".2 .3 .4" width="300" height="300" mark="edge" markrgb=".2 .3 .4"/>
+        <material name="floor_grid" texture="floor_grid" texrepeat="1 1" texuniform="true" reflectance=".2"/>`,
+    );
     xmlText = xmlText.replace(
       "<worldbody>",
       `<worldbody>
-        <geom name="floor" type="plane" size="200 200 0.01" pos="0 0 0" rgba="0.06 0.07 0.10 1" condim="3" friction="1 0.005 0.0001" contype="1" conaffinity="1"/>
+        <geom name="floor" type="plane" size="5 5 0.1" material="floor_grid" pos="0 0 -0.15" solref="0.0002 1" condim="3" friction="1 0.005 0.0001" contype="1" conaffinity="1"/>
         <light name="top" pos="0 0 5" dir="0 0 -1" diffuse="0.4 0.4 0.4"/>`,
     );
 
@@ -96,13 +105,21 @@ export class Physics {
     p.data = new p.mujoco.MjData(p.model);
     onProgress?.(`MJCF compiled in ${((performance.now() - tCompile) / 1000).toFixed(1)} s`);
 
-    // Reset to defaults, lift thorax above the floor we injected, then
-    // run forward kinematics so xpos/xquat are populated for t=0.
+    // Initialise to flybody's canonical rest pose. From
+    // TuragaLab/flybody/flybody/fruitfly/fruitfly.py:
+    //   - _SPAWN_POS = (0, 0, 0.1278): thorax xyz on the floor surface.
+    //   - Each joint's qpos is set to model.qpos_spring (its natural
+    //     rest target) — without this, joints sit at zero and the legs
+    //     splay out instead of standing.
     p.mujoco.mj_resetData(p.model, p.data);
     const qpos = p.data.qpos as Float64Array;
+    const qposSpring = p.model.qpos_spring as Float64Array;
+    if (qposSpring && qposSpring.length === qpos.length) {
+      qpos.set(qposSpring);
+    }
     if (qpos.length >= 7) {
-      qpos[0] = 0; qpos[1] = 0; qpos[2] = 0.5;
-      qpos[3] = 1; qpos[4] = 0; qpos[5] = 0; qpos[6] = 0;
+      qpos[0] = 0; qpos[1] = 0; qpos[2] = 0.1278;          // _SPAWN_POS
+      qpos[3] = 1; qpos[4] = 0; qpos[5] = 0; qpos[6] = 0;  // identity quat
     }
     p.mujoco.mj_forward(p.model, p.data);
 
@@ -163,8 +180,12 @@ export class Physics {
   reset() {
     this.mujoco.mj_resetData(this.model, this.data);
     const qpos = this.data.qpos as Float64Array;
+    const qposSpring = this.model.qpos_spring as Float64Array;
+    if (qposSpring && qposSpring.length === qpos.length) {
+      qpos.set(qposSpring);
+    }
     if (qpos.length >= 7) {
-      qpos[0] = 0; qpos[1] = 0; qpos[2] = 0.5;
+      qpos[0] = 0; qpos[1] = 0; qpos[2] = 0.1278;
       qpos[3] = 1; qpos[4] = 0; qpos[5] = 0; qpos[6] = 0;
     }
     this.mujoco.mj_forward(this.model, this.data);
