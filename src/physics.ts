@@ -251,16 +251,21 @@ export class Physics {
         const qpos = this.data.qpos as Float64Array;
         const qvel = this.data.qvel as Float64Array;
         const qw = qpos[3], qx = qpos[4], qy = qpos[5], qz = qpos[6];
-        // flybody's head sits at body-local +x (see thorax XML
-        // children). Rotate body +x by the freejoint quat to get
-        // world heading. Earlier code used body +y, which made the
-        // mesh appear to scoot sideways relative to its motion.
+        // flybody's head sits at body-local +x — rotate body +x by
+        // the freejoint quat for the world heading.
         const fx = 1 - 2 * (qy * qy + qz * qz);
         const fy = 2 * (qx * qy + qw * qz);
         const drv = Math.sqrt(Math.abs(this.fwdCmd));
-        const v = 4.0 * this.fwdCmd;       // signed: negative → backward
+        const v = 2.0 * this.fwdCmd;        // gentler peak (was 4.0)
         qvel[0] = fx * v;
         qvel[1] = fy * v;
+        // Lock pitch + roll: kinematic body translation + planted
+        // feet otherwise produces a face-plant torque. Force angular
+        // velocity in roll (qvel[3]) and pitch (qvel[4]) to zero
+        // each substep so the body stays upright; turn (qvel[5]) is
+        // commanded directly.
+        qvel[3] = 0;
+        qvel[4] = 0;
         qvel[5] = -this.turnCmd * 3.0 * Math.max(0.5, drv);
       }
       this.mujoco.mj_step(this.model, this.data);
