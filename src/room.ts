@@ -125,14 +125,14 @@ export class Room {
       this.bodies.push(g);
     }
 
-    // Build the parent-child tree using model.body_parentid.
-    const parentArr = m.body_parentid as Int32Array;
-    for (let b = 1; b < nbody; b++) {
-      const parent = parentArr[b];
-      if (parent >= 0 && parent !== b) this.bodies[parent].add(this.bodies[b]);
-      else this.mjRoot.add(this.bodies[b]);
-    }
-    if (nbody > 0) this.mjRoot.add(this.bodies[0]);
+    // Flat body graph: all bodies attach DIRECTLY to mjRoot (worldbody).
+    // We deliberately do NOT use model.body_parentid here. data.xpos /
+    // data.xquat are already in world frame; if we built the real
+    // parent tree, three.js would compose each child with all its
+    // ancestors and the fly would explode outward (which is what
+    // happened on every previous attempt). zalo/mujoco_wasm flattens
+    // the graph for the same reason — see mujocoUtils.js line 571-582.
+    for (let b = 0; b < nbody; b++) this.mjRoot.add(this.bodies[b]);
 
     // Walk every geom; build geometry, set local pos/quat (in body frame),
     // attach to body group.
