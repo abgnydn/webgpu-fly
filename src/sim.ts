@@ -122,7 +122,7 @@ export class FlySim {
     // Vm initialised to v_rest
     const vm0 = new Float32Array(N);
     vm0.fill(this.params.vRest);
-    this.vmBuf = make(vm0, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC, "vm");
+    this.vmBuf = make(vm0, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST, "vm");
 
     this.refracBuf = device.createBuffer({
       size: N * 4,
