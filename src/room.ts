@@ -1,14 +1,17 @@
-// room.ts — Three.js arena that renders the flybody using MuJoCo's
-// mjv_updateScene scene graph. Each render frame, MuJoCo bakes
-// body-transform × geom-local-transform into a list of mjvGeoms with
-// world-frame pos[3] + mat[9]. We pull each mjvGeom into a cached
-// THREE.Mesh and write its 4×4 transform from the baked values.
+// room.ts — Three.js scene driven by MuJoCo via the canonical
+// "zalo/mujoco_wasm" pattern (also used by RenaissanceTek/fly-sim, which
+// puts flybody specifically in the browser). The key shift from earlier
+// attempts: pull mesh vertex / face / normal / uv buffers DIRECTLY from
+// `model.mesh_*` (already-processed by MuJoCo, so geometry is guaranteed
+// to align with body kinematics) and keep one THREE.Group per MuJoCo
+// body that we update each frame from data.xpos / data.xquat.
 //
-// Pattern adapted from Google DeepMind's official mujoco_wasm three.js
-// demo (mujoco/wasm/demo_app/app.ts) — the canonical way.
+// Coordinate handling: MuJoCo is z-up, three.js y-up. We swizzle every
+// vertex (and every position / quaternion fed to body groups) at the
+// data layer, so no parent rotation is needed. zalo's getPosition /
+// getQuaternion equivalents are inlined as swizzlePos / swizzleQuat.
 
 import * as THREE from "three";
-import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { Physics } from "./physics";
 
 export interface RoomOpts {
@@ -16,26 +19,27 @@ export interface RoomOpts {
   bg?: number;
 }
 
-// Fly is ~0.5 cm long after the MJCF's 0.1 mesh scale. Scale up to a
-// handful of TJ units so it fits comfortably in the camera frame at a
-// few-units radius. Floor is matched to fly footprint.
-const VISUAL_SCALE = 8;   // 0.5 cm × 8 → ~4 TJ-long fly
-const FLOOR_SIZE = 12;
+const VISUAL_SCALE = 6;          // MJ cm × 6 → TJ units; ~3 cm fly → ~18 TJ
+const FLOOR_TILE = 12;           // visual grid helper extent
 
-// Backport of CapsuleGeometry — verbatim from the official demo.
-class FlybodyCapsuleGeometry extends THREE.BufferGeometry {
-  constructor(radius = 1, length = 1, capSegments = 4, radialSegments = 8) {
-    const path = new THREE.Path();
-    path.absarc(0, -length / 2, radius, Math.PI * 1.5, 0, false);
-    path.absarc(0, length / 2, radius, 0, Math.PI * 0.5, false);
-    const lathe = new THREE.LatheGeometry(path.getPoints(capSegments), radialSegments);
-    super();
-    const idx = lathe.getIndex();
-    if (idx) this.setIndex(idx);
-    this.setAttribute("position", lathe.getAttribute("position"));
-    this.setAttribute("normal", lathe.getAttribute("normal"));
-    this.setAttribute("uv", lathe.getAttribute("uv"));
-  }
+/** target.set( x, z, -y ) — converts MJ z-up to TJ y-up. */
+function swizzlePos(buf: Float32Array | Float64Array, idx: number, target: THREE.Vector3) {
+  return target.set(
+     buf[idx * 3 + 0],
+     buf[idx * 3 + 2],
+    -buf[idx * 3 + 1],
+  );
+}
+
+/** Quaternion swizzle for the (x, z, -y) axis swap. MuJoCo stores
+ *  (w, x, y, z); three.js wants (x, y, z, w). */
+function swizzleQuat(buf: Float32Array | Float64Array, idx: number, target: THREE.Quaternion) {
+  return target.set(
+    -buf[idx * 4 + 1],
+    -buf[idx * 4 + 3],
+     buf[idx * 4 + 2],
+    -buf[idx * 4 + 0],
+  );
 }
 
 export class Room {
@@ -43,24 +47,19 @@ export class Room {
   readonly camera: THREE.PerspectiveCamera;
   readonly renderer: THREE.WebGLRenderer;
 
-  private flyRoot = new THREE.Group();    // z-up → y-up rotation lives here
-  private meshes: THREE.Mesh[] = [];       // index aligned with scene.geoms.get(i)
-  private geomCache = new Map<string, THREE.BufferGeometry>();
-  private meshLoader = new OBJLoader();
-  /** Per-mesh-id (mujoco mesh dataid) → fully loaded BufferGeometry. */
-  private meshGeomById = new Map<number, THREE.BufferGeometry>();
+  private mjRoot = new THREE.Group();   // VISUAL_SCALE wrapper
+  private bodies: THREE.Group[] = [];    // index = MuJoCo body id
   private physics: Physics | null = null;
   private rafId = 0;
 
-  // orbit state
+  // orbit
   private isDragging = false;
   private prev = { x: 0, y: 0 };
   private azimuth = 0.5;
   private elevation = 0.4;
-  private radius = 8;
-  private lookY = 4;     // dynamic lookAt y, follows fly thorax
+  private radius = 12;
 
-  // commanded velocity placeholder (will drive actuators in Phase 2.1)
+  // drive (Phase 2.1 will use this for actuator control)
   private forward = 0;
   private turn = 0;
 
@@ -77,24 +76,21 @@ export class Room {
 
     this.camera = new THREE.PerspectiveCamera(40, w / h, 0.05, 500);
 
-    this.scene.add(new THREE.AmbientLight(0x4a5a6e, 0.7));
-    const key = new THREE.DirectionalLight(0xffd9a0, 1.2);
+    this.scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const key = new THREE.DirectionalLight(0xffd9a0, 1.1);
     key.position.set(8, 14, 6);
     this.scene.add(key);
-    const fill = new THREE.DirectionalLight(0x6da0ff, 0.5);
+    const fill = new THREE.DirectionalLight(0x6da0ff, 0.4);
     fill.position.set(-6, 4, -8);
     this.scene.add(fill);
 
-    const grid = new THREE.GridHelper(FLOOR_SIZE, 16, 0x2a3340, 0x1a2028);
+    const grid = new THREE.GridHelper(FLOOR_TILE, 24, 0x2a3340, 0x1a2028);
     (grid.material as THREE.Material).transparent = true;
-    (grid.material as THREE.Material).opacity = 0.55;
+    (grid.material as THREE.Material).opacity = 0.5;
     this.scene.add(grid);
 
-    // flyRoot rotates MuJoCo z-up world into Three.js y-up world, then
-    // VISUAL_SCALE makes the cm-scale fly visible at room scale.
-    this.flyRoot.rotation.x = -Math.PI / 2;
-    this.flyRoot.scale.setScalar(VISUAL_SCALE);
-    this.scene.add(this.flyRoot);
+    this.mjRoot.scale.setScalar(VISUAL_SCALE);
+    this.scene.add(this.mjRoot);
 
     this.updateCameraFromOrbit();
     this.attachInput();
@@ -104,61 +100,221 @@ export class Room {
 
   async attachPhysics(physics: Physics) {
     this.physics = physics;
-    await this.preloadMeshes(physics);
+    this.buildBodyGraphFromMujoco(physics);
   }
 
-  /** Parse every flybody OBJ once into a BufferGeometry keyed by meshId.
-   * Uses the bytes physics already pulled from IDB/network so we don't
-   * round-trip the network again. */
-  private async preloadMeshes(phys: Physics) {
-    if (!phys.meshBytes) return;
-    const decoder = new TextDecoder();
-    for (let id = 0; id < phys.meshFileById.length; id++) {
-      const file = phys.meshFileById[id];
-      if (!file) continue;
-      const u8 = phys.meshBytes.get(file);
-      if (!u8) continue;
-      const grp = this.meshLoader.parse(decoder.decode(u8));
-      let merged: THREE.BufferGeometry | null = null;
-      grp.traverse((obj) => {
-        if (!merged && (obj as THREE.Mesh).isMesh) {
-          merged = (obj as THREE.Mesh).geometry as THREE.BufferGeometry;
-        }
-      });
-      if (merged) {
-        const g = merged as THREE.BufferGeometry;
-        // MuJoCo auto-shifts each mesh so its geometric (bbox) centre is
-        // at the mesh-reference-frame origin — see MJCF <mesh> docs. We
-        // mirror that here, then bake in the MJCF default scale="0.1
-        // 0.1 0.1". Without the centering, every body part is offset
-        // by its OBJ centroid and the fly looks exploded.
-        g.center();
-        g.scale(0.1, 0.1, 0.1);
-        this.meshGeomById.set(id, g);
+  setDrive(forward: number, turn: number) { this.forward = forward; this.turn = turn; }
+  resetFly() { this.physics?.reset(); }
+  setEyeGlow(_: number) { /* TODO: locate head body, modulate emissive. */ }
+
+  // --- scene-graph build (zalo pattern) -------------------------------------
+  private buildBodyGraphFromMujoco(phys: Physics) {
+    const m = phys.model as any;
+    const ngeom = m.ngeom as number;
+    const nbody = m.nbody as number;
+    const T = phys.mujoco.mjtGeom;
+
+    // mesh-id → cached BufferGeometry, built from MuJoCo's processed buffers.
+    const meshGeos = new Map<number, THREE.BufferGeometry>();
+
+    // Pre-create body groups so geom parenting can use any id.
+    this.bodies = [];
+    for (let b = 0; b < nbody; b++) {
+      const g = new THREE.Group();
+      g.name = `body_${b}`;
+      this.bodies.push(g);
+    }
+
+    // Build the parent-child tree using model.body_parentid.
+    const parentArr = m.body_parentid as Int32Array;
+    for (let b = 1; b < nbody; b++) {
+      const parent = parentArr[b];
+      if (parent >= 0 && parent !== b) this.bodies[parent].add(this.bodies[b]);
+      else this.mjRoot.add(this.bodies[b]);
+    }
+    if (nbody > 0) this.mjRoot.add(this.bodies[0]);
+
+    // Walk every geom; build geometry, set local pos/quat (in body frame),
+    // attach to body group.
+    const geomGroup = m.geom_group as Int32Array;
+    const geomBodyId = m.geom_bodyid as Int32Array;
+    const geomType = m.geom_type as Int32Array;
+    const geomDataId = m.geom_dataid as Int32Array;
+    const geomSize = m.geom_size as Float32Array;
+    const geomRgba = m.geom_rgba as Float32Array;
+    const geomPos = m.geom_pos as Float32Array;
+    const geomQuat = m.geom_quat as Float32Array;
+
+    let visibleGeoms = 0;
+    for (let g = 0; g < ngeom; g++) {
+      // group<3 matches MuJoCo's `simulate` default — skip collision (4)
+      // and helpers (5+).
+      if (geomGroup[g] >= 3) continue;
+
+      const type = geomType[g];
+      const sx = geomSize[g * 3], sy = geomSize[g * 3 + 1], sz = geomSize[g * 3 + 2];
+      let geometry: THREE.BufferGeometry;
+
+      if (type === T.mjGEOM_PLANE.value) {
+        geometry = new THREE.PlaneGeometry(2 * (sx || 100), 2 * (sy || 100));
+        geometry.rotateX(-Math.PI / 2);
+      } else if (type === T.mjGEOM_SPHERE.value) {
+        geometry = new THREE.SphereGeometry(sx, 16, 12);
+      } else if (type === T.mjGEOM_CAPSULE.value) {
+        geometry = new THREE.CapsuleGeometry(sx, sy * 2, 4, 12);
+      } else if (type === T.mjGEOM_CYLINDER.value) {
+        geometry = new THREE.CylinderGeometry(sx, sx, sy * 2, 16);
+      } else if (type === T.mjGEOM_BOX.value) {
+        geometry = new THREE.BoxGeometry(2 * sx, 2 * sz, 2 * sy);
+      } else if (type === T.mjGEOM_ELLIPSOID.value) {
+        geometry = new THREE.SphereGeometry(1, 16, 12);
+        geometry.scale(sx, sy, sz);
+      } else if (type === T.mjGEOM_MESH.value) {
+        const meshId = geomDataId[g];
+        let cached = meshGeos.get(meshId);
+        if (!cached) cached = this.buildMeshGeometry(phys, meshId);
+        geometry = cached;
+        meshGeos.set(meshId, cached);
+      } else {
+        continue; // unsupported types (hfield, sdf) — silently skip
       }
+
+      const r = geomRgba[g * 4], gC = geomRgba[g * 4 + 1], bC = geomRgba[g * 4 + 2], a = geomRgba[g * 4 + 3];
+      const material = new THREE.MeshStandardMaterial({
+        color: new THREE.Color(r, gC, bC),
+        transparent: a < 1.0,
+        opacity: a,
+        roughness: 0.55,
+        metalness: 0.1,
+      });
+
+      const mesh = new THREE.Mesh(geometry, material);
+      const v = new THREE.Vector3();
+      const q = new THREE.Quaternion();
+      swizzlePos(geomPos, g, v);
+      swizzleQuat(geomQuat, g, q);
+      mesh.position.copy(v);
+      mesh.quaternion.copy(q);
+      this.bodies[geomBodyId[g]].add(mesh);
+      visibleGeoms++;
+    }
+    console.log(`flybody scene built: ${nbody} bodies, ${visibleGeoms} visible geoms, ${meshGeos.size} unique meshes`);
+  }
+
+  /** Replicates zalo/mujoco_wasm's mesh-from-MuJoCo path. Pulls vertex /
+   * face / normal / uv buffers straight from the model so we never have
+   * to re-parse OBJ on the JS side. Includes the y↔z, negate-y per-vertex
+   * swizzle so the result lives in three.js y-up space without parent
+   * rotation. */
+  private buildMeshGeometry(phys: Physics, meshId: number): THREE.BufferGeometry {
+    const m = phys.model as any;
+    const mesh_vert = m.mesh_vert as Float32Array;
+    const mesh_normal = m.mesh_normal as Float32Array;
+    const mesh_texcoord = m.mesh_texcoord as Float32Array;
+    const mesh_face = m.mesh_face as Int32Array;
+    const mesh_facetexcoord = m.mesh_facetexcoord as Int32Array;
+    const mesh_facenormal = m.mesh_facenormal as Int32Array;
+    const mesh_vertadr = m.mesh_vertadr as Int32Array;
+    const mesh_vertnum = m.mesh_vertnum as Int32Array;
+    const mesh_normaladr = m.mesh_normaladr as Int32Array;
+    const mesh_normalnum = m.mesh_normalnum as Int32Array;
+    const mesh_texcoordadr = m.mesh_texcoordadr as Int32Array;
+    const mesh_faceadr = m.mesh_faceadr as Int32Array;
+    const mesh_facenum = m.mesh_facenum as Int32Array;
+
+    const vAdr = mesh_vertadr[meshId], vNum = mesh_vertnum[meshId];
+    const vert = new Float32Array(mesh_vert.buffer, mesh_vert.byteOffset + vAdr * 3 * 4, vNum * 3).slice();
+    // Per-vertex swizzle: (x, y, z) → (x, z, -y). Bake into the buffer.
+    for (let v = 0; v < vert.length; v += 3) {
+      const ty = vert[v + 1];
+      vert[v + 1] = vert[v + 2];
+      vert[v + 2] = -ty;
+    }
+
+    const nAdr = mesh_normaladr[meshId], nNum = mesh_normalnum[meshId];
+    const norm = new Float32Array(mesh_normal.buffer, mesh_normal.byteOffset + nAdr * 3 * 4, nNum * 3).slice();
+    for (let v = 0; v < norm.length; v += 3) {
+      const ty = norm[v + 1];
+      norm[v + 1] = norm[v + 2];
+      norm[v + 2] = -ty;
+    }
+
+    const fAdr = mesh_faceadr[meshId], fNum = mesh_facenum[meshId];
+    const face = new Int32Array(
+      mesh_face.buffer, mesh_face.byteOffset + fAdr * 3 * 4, fNum * 3,
+    );
+
+    // UV is per-vertex of texcoords, but faces reference texcoord
+    // indices through facetexcoord. Swizzle into per-mesh-vertex form.
+    const tAdr = mesh_texcoordadr[meshId];
+    const haveUV = tAdr >= 0 && mesh_texcoord;
+    const swUV = new Float32Array(vNum * 2);
+    const swNormal = new Float32Array(vNum * 3);
+    if (haveUV || true) {
+      const fTexAdr = fAdr * 3;
+      const fNormAdr = fAdr * 3;
+      for (let t = 0; t < fNum; t++) {
+        for (let k = 0; k < 3; k++) {
+          const vi = face[t * 3 + k];
+          if (haveUV && mesh_facetexcoord) {
+            const uvi = mesh_facetexcoord[fTexAdr + t * 3 + k];
+            if (uvi >= 0) {
+              swUV[vi * 2 + 0] = mesh_texcoord[(tAdr + uvi) * 2 + 0];
+              swUV[vi * 2 + 1] = mesh_texcoord[(tAdr + uvi) * 2 + 1];
+            }
+          }
+          if (mesh_facenormal) {
+            const ni = mesh_facenormal[fNormAdr + t * 3 + k];
+            if (ni >= 0) {
+              swNormal[vi * 3 + 0] = norm[ni * 3 + 0];
+              swNormal[vi * 3 + 1] = norm[ni * 3 + 1];
+              swNormal[vi * 3 + 2] = norm[ni * 3 + 2];
+            }
+          }
+        }
+      }
+    }
+
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute("position", new THREE.BufferAttribute(vert, 3));
+    geom.setAttribute("normal", new THREE.BufferAttribute(swNormal.length === vNum * 3 && nNum ? swNormal : norm.subarray(0, vNum * 3), 3));
+    if (haveUV) geom.setAttribute("uv", new THREE.BufferAttribute(swUV, 2));
+    geom.setIndex(Array.from(face));
+    geom.computeVertexNormals();   // MuJoCo normals can be off; recompute matches zalo.
+    return geom;
+  }
+
+  // --- per-frame body transform update --------------------------------------
+  private syncBodyTransforms() {
+    const phys = this.physics!;
+    const xpos = phys.data.xpos as Float64Array;
+    const xquat = phys.data.xquat as Float64Array;
+    const v = new THREE.Vector3();
+    const q = new THREE.Quaternion();
+    for (let b = 1; b < this.bodies.length; b++) {
+      swizzlePos(xpos, b, v);
+      swizzleQuat(xquat, b, q);
+      this.bodies[b].position.copy(v);
+      this.bodies[b].quaternion.copy(q);
     }
   }
 
-  setDrive(forward: number, turn: number) {
-    this.forward = forward;
-    this.turn = turn;
-  }
-
-  resetFly() {
-    this.physics?.reset();
-  }
-
-  setEyeGlow(_intensity: number) { /* TODO: identify head body, modulate emissive. */ }
-
+  // --- camera / input -------------------------------------------------------
   private updateCameraFromOrbit() {
+    let lookY = 1;
+    if (this.physics) {
+      const xpos = this.physics.data.xpos as Float64Array;
+      // Body 1 is thorax. MJ z (height) → TJ y after swizzle.
+      lookY = (xpos[3 * 1 + 2] || 0) * VISUAL_SCALE;
+    }
     const ce = Math.cos(this.elevation), se = Math.sin(this.elevation);
     const ca = Math.cos(this.azimuth), sa = Math.sin(this.azimuth);
     this.camera.position.set(
       this.radius * ce * sa,
-      this.lookY + this.radius * se,
+      lookY + this.radius * se,
       this.radius * ce * ca,
     );
-    this.camera.lookAt(0, this.lookY, 0);
+    this.camera.lookAt(0, lookY, 0);
   }
 
   private attachInput() {
@@ -201,114 +357,11 @@ export class Room {
   private startLoop() {
     const tick = () => {
       this.rafId = requestAnimationFrame(tick);
-      if (this.physics) this.syncFromMujoco();
+      if (this.physics && this.bodies.length) this.syncBodyTransforms();
       this.updateCameraFromOrbit();
       this.renderer.render(this.scene, this.camera);
     };
     requestAnimationFrame(tick);
-  }
-
-  /** Pull baked scene geoms from MuJoCo and apply transforms to TJ meshes. */
-  private syncFromMujoco() {
-    const phys = this.physics!;
-    phys.updateScene();
-    const mujoco = phys.mujoco;
-    const geoms = phys.scene.geoms;
-    const n = geoms.size();
-    // Track thorax (body id 1) world height for camera lookY.
-    const xpos = phys.data.xpos as Float64Array;
-    if (xpos && xpos.length >= 6) {
-      // MJ z = pos[2] of body 1 → TJ y after rotation; × scale at root.
-      this.lookY = xpos[5] * VISUAL_SCALE;
-    }
-
-    for (let i = 0; i < n; i++) {
-      const g = geoms.get(i);
-      if (!g) continue;
-
-      let mesh: THREE.Mesh | undefined = this.meshes[i];
-      if (!mesh) {
-        const { geometry, material } = this.makeGeomMesh(g, mujoco);
-        mesh = new THREE.Mesh(geometry, material);
-        mesh.matrixAutoUpdate = false;
-        this.flyRoot.add(mesh);
-        this.meshes[i] = mesh;
-      }
-
-      // Build the 4x4 from baked pos[3] + mat[9] (row-major 3x3).
-      const pos = g.pos as Float32Array | Float64Array;
-      const mat = g.mat as Float32Array | Float64Array;
-      mesh.matrix.set(
-        mat[0], mat[1], mat[2], pos[0],
-        mat[3], mat[4], mat[5], pos[1],
-        mat[6], mat[7], mat[8], pos[2],
-        0, 0, 0, 1,
-      );
-      mesh.matrixWorldNeedsUpdate = true;
-
-      g.delete();
-    }
-
-    // Hide stale meshes if scene shrunk (e.g. fewer contact geoms).
-    for (let i = n; i < this.meshes.length; i++) this.meshes[i].visible = false;
-
-    geoms.delete();
-  }
-
-  /** Build the right Three.js geometry+material for an MjvGeom. */
-  private makeGeomMesh(g: any, mujoco: any) {
-    const type: number = g.type;
-    const sz = g.size as Float32Array | Float64Array;
-    const rgba = g.rgba as Float32Array;
-
-    const T = mujoco.mjtGeom;
-    let geometry: THREE.BufferGeometry;
-
-    if (type === T.mjGEOM_PLANE.value) {
-      geometry = new THREE.PlaneGeometry(
-        2 * (sz[0] || 200), 2 * (sz[1] || 200),
-      );
-      geometry.rotateX(-Math.PI / 2);  // PlaneGeometry is xy-up by default
-    } else if (type === T.mjGEOM_SPHERE.value) {
-      geometry = new THREE.SphereGeometry(sz[0], 16, 12);
-    } else if (type === T.mjGEOM_CAPSULE.value) {
-      geometry = new FlybodyCapsuleGeometry(sz[0], 2 * sz[2], 8, 12);
-      geometry.rotateX(0.5 * Math.PI);
-    } else if (type === T.mjGEOM_BOX.value) {
-      geometry = new THREE.BoxGeometry(2 * sz[0], 2 * sz[1], 2 * sz[2]);
-    } else if (type === T.mjGEOM_CYLINDER.value) {
-      geometry = new THREE.CylinderGeometry(sz[0], sz[0], 2 * sz[2], 16);
-      geometry.rotateX(0.5 * Math.PI);
-    } else if (type === T.mjGEOM_ELLIPSOID.value) {
-      geometry = new THREE.SphereGeometry(1, 16, 12);
-      geometry.scale(sz[0], sz[1], sz[2]);
-    } else if (type === T.mjGEOM_MESH.value) {
-      // All meshes were preloaded in attachPhysics, so this is a sync
-      // lookup. If for some reason the OBJ wasn't found, render an
-      // invisible placeholder (small sphere) so we don't crash.
-      const meshId: number = g.dataid;
-      geometry = this.meshGeomById.get(meshId) ?? this.placeholderGeometry();
-    } else {
-      geometry = new THREE.BufferGeometry();
-    }
-
-    const material = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(rgba[0], rgba[1], rgba[2]),
-      transparent: rgba[3] !== 1,
-      opacity: rgba[3],
-      roughness: 0.55,
-      metalness: 0.1,
-    });
-    return { geometry, material };
-  }
-
-  private placeholderGeometry(): THREE.BufferGeometry {
-    let g = this.geomCache.get("__placeholder");
-    if (!g) {
-      g = new THREE.SphereGeometry(0.001, 4, 3);
-      this.geomCache.set("__placeholder", g);
-    }
-    return g;
   }
 
   dispose() {

@@ -26,10 +26,8 @@ export class Physics {
   private cam!: MjvCamera;
   private catBitAll = 0;
 
-  /** mesh id (dataid in MjvGeom for mesh geoms) → OBJ filename. */
+  /** mesh id (mujoco mesh table index) → OBJ filename. */
   meshFileById: string[] = [];
-  /** Raw OBJ bytes keyed by filename — keeps the renderer off the network. */
-  meshBytes: Map<string, Uint8Array> | null = null;
 
   static async create(onProgress?: (msg: string) => void): Promise<Physics> {
     const p = new Physics();
@@ -58,8 +56,6 @@ export class Physics {
     onProgress?.(`fetching ${meshFiles.length} meshes (IDB cached: ${stats.count}, ${(stats.bytes / 1e6).toFixed(0)} MB)`);
 
     p.vfs = new p.mujoco.MjVFS();
-    // Keep raw bytes around so the renderer can parse OBJs without re-fetching.
-    p.meshBytes = new Map();
     const CONCURRENCY = 4;
     let inFlight = 0, idx = 0, completed = 0, totalBytes = 0;
     const t0 = performance.now();
@@ -72,7 +68,6 @@ export class Physics {
             .then((buf) => {
               const u8 = new Uint8Array(buf);
               p.vfs.addBuffer(file, u8);
-              p.meshBytes!.set(file, u8);
               completed++;
               totalBytes += buf.byteLength;
               if (completed % 20 === 0 || completed === meshFiles.length) {
