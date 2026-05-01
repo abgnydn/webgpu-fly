@@ -12,6 +12,7 @@ import type {
   MainModule, MjModel, MjData,
   MjVFS, MjvScene, MjvOption, MjvPerturb, MjvCamera,
 } from "@mujoco/mujoco";
+import { getOrFetch, cacheStats } from "./cache";
 
 export class Physics {
   mujoco!: MainModule;
@@ -27,6 +28,8 @@ export class Physics {
 
   /** mesh id (dataid in MjvGeom for mesh geoms) → OBJ filename. */
   meshFileById: string[] = [];
+  /** Raw OBJ bytes keyed by filename — keeps the renderer off the network. */
+  meshBytes: Map<string, Uint8Array> | null = null;
 
   static async create(onProgress?: (msg: string) => void): Promise<Physics> {
     const p = new Physics();
@@ -52,9 +55,12 @@ export class Physics {
           .filter((f) => f.endsWith(".obj")),
       ),
     );
-    onProgress?.(`fetching ${meshFiles.length} meshes`);
+    const stats = await cacheStats();
+    onProgress?.(`fetching ${meshFiles.length} meshes (IDB cached: ${stats.count}, ${(stats.bytes / 1e6).toFixed(0)} MB)`);
 
     p.vfs = new p.mujoco.MjVFS();
+    // Keep raw bytes around so the renderer can parse OBJs without re-fetching.
+    p.meshBytes = new Map();
     const CONCURRENCY = 4;
     let inFlight = 0, idx = 0, completed = 0, totalBytes = 0;
     const t0 = performance.now();
@@ -63,13 +69,11 @@ export class Physics {
         while (inFlight < CONCURRENCY && idx < meshFiles.length) {
           const file = meshFiles[idx++];
           inFlight++;
-          fetch(`/flybody/${file}`)
-            .then((r) => {
-              if (!r.ok) throw new Error(`${file}: HTTP ${r.status}`);
-              return r.arrayBuffer();
-            })
+          getOrFetch(file, `/flybody/${file}`)
             .then((buf) => {
-              p.vfs.addBuffer(file, new Uint8Array(buf));
+              const u8 = new Uint8Array(buf);
+              p.vfs.addBuffer(file, u8);
+              p.meshBytes!.set(file, u8);
               completed++;
               totalBytes += buf.byteLength;
               if (completed % 20 === 0 || completed === meshFiles.length) {
@@ -126,6 +130,16 @@ export class Physics {
     p.cam = new p.mujoco.MjvCamera();
     p.scene = new p.mujoco.MjvScene(p.model, 4096);
     p.catBitAll = p.mujoco.mjtCatBit.mjCAT_ALL.value;
+    // mjv_defaultOption initialises geomgroup[0..5]=1 (all visible),
+    // sitegroup, flags, etc. — without this, fresh `new MjvOption()`
+    // can leave geomgroup zeroed and visual meshes get filtered out.
+    p.mujoco.mjv_defaultOption(p.opt);
+    // Hide the collision group (group=4) since flybody renders the
+    // pretty visual mesh on group=1 separately. Keeps the right pane
+    // clean instead of showing scattered collision capsules over the
+    // visuals.
+    const grp = p.opt.geomgroup as Uint8Array;
+    if (grp && grp.length > 4) grp[4] = 0;
 
     onProgress?.(`flybody ready (${p.model.nbody} bodies, ${nmesh} meshes)`);
     return p;

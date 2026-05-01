@@ -44,8 +44,8 @@ export class Room {
   private meshes: THREE.Mesh[] = [];       // index aligned with scene.geoms.get(i)
   private geomCache = new Map<string, THREE.BufferGeometry>();
   private meshLoader = new OBJLoader();
-  /** Per-mesh-id (mujoco mesh dataid) → loaded BufferGeometry promise. */
-  private objCache = new Map<number, Promise<THREE.BufferGeometry | null>>();
+  /** Per-mesh-id (mujoco mesh dataid) → fully loaded BufferGeometry. */
+  private meshGeomById = new Map<number, THREE.BufferGeometry>();
   private physics: Physics | null = null;
   private rafId = 0;
 
@@ -101,6 +101,35 @@ export class Room {
 
   async attachPhysics(physics: Physics) {
     this.physics = physics;
+    await this.preloadMeshes(physics);
+  }
+
+  /** Parse every flybody OBJ once into a BufferGeometry keyed by meshId.
+   * Uses the bytes physics already pulled from IDB/network so we don't
+   * round-trip the network again. */
+  private async preloadMeshes(phys: Physics) {
+    if (!phys.meshBytes) return;
+    const decoder = new TextDecoder();
+    for (let id = 0; id < phys.meshFileById.length; id++) {
+      const file = phys.meshFileById[id];
+      if (!file) continue;
+      const u8 = phys.meshBytes.get(file);
+      if (!u8) continue;
+      const grp = this.meshLoader.parse(decoder.decode(u8));
+      let merged: THREE.BufferGeometry | null = null;
+      grp.traverse((obj) => {
+        if (!merged && (obj as THREE.Mesh).isMesh) {
+          merged = (obj as THREE.Mesh).geometry as THREE.BufferGeometry;
+        }
+      });
+      if (merged) {
+        // flybody's <default> applies scale="0.1 0.1 0.1" to all meshes.
+        // Bake that into the geometry once so the mjvGeom transform from
+        // mjv_updateScene is correctly placed.
+        (merged as THREE.BufferGeometry).scale(0.1, 0.1, 0.1);
+        this.meshGeomById.set(id, merged);
+      }
+    }
   }
 
   setDrive(forward: number, turn: number) {
@@ -186,7 +215,7 @@ export class Room {
 
       let mesh: THREE.Mesh | undefined = this.meshes[i];
       if (!mesh) {
-        const { geometry, material } = this.makeGeomMesh(g, mujoco, phys);
+        const { geometry, material } = this.makeGeomMesh(g, mujoco);
         mesh = new THREE.Mesh(geometry, material);
         mesh.matrixAutoUpdate = false;
         this.flyRoot.add(mesh);
@@ -222,7 +251,7 @@ export class Room {
   }
 
   /** Build the right Three.js geometry+material for an MjvGeom. */
-  private makeGeomMesh(g: any, mujoco: any, phys: Physics) {
+  private makeGeomMesh(g: any, mujoco: any) {
     const type: number = g.type;
     const sz = g.size as Float32Array | Float64Array;
     const rgba = g.rgba as Float32Array;
@@ -249,18 +278,11 @@ export class Room {
       geometry = new THREE.SphereGeometry(1, 16, 12);
       geometry.scale(sz[0], sz[1], sz[2]);
     } else if (type === T.mjGEOM_MESH.value) {
-      // Async: kick off OBJ load, return a placeholder until it lands.
+      // All meshes were preloaded in attachPhysics, so this is a sync
+      // lookup. If for some reason the OBJ wasn't found, render an
+      // invisible placeholder (small sphere) so we don't crash.
       const meshId: number = g.dataid;
-      geometry = this.placeholderGeometry();
-      this.loadMeshObj(meshId, phys).then((loaded) => {
-        if (loaded) {
-          // Swap geometry once loaded.
-          // (mesh array index isn't trivially reachable here; iterate.)
-          for (const m of this.meshes) {
-            if (m && m.geometry === geometry) m.geometry = loaded;
-          }
-        }
-      });
+      geometry = this.meshGeomById.get(meshId) ?? this.placeholderGeometry();
     } else {
       geometry = new THREE.BufferGeometry();
     }
@@ -282,35 +304,6 @@ export class Room {
       this.geomCache.set("__placeholder", g);
     }
     return g;
-  }
-
-  private loadMeshObj(meshId: number, phys: Physics): Promise<THREE.BufferGeometry | null> {
-    let p = this.objCache.get(meshId);
-    if (p) return p;
-    const file = phys.meshFileById[meshId];
-    if (!file) return Promise.resolve(null);
-    p = fetch(`/flybody/${file}`)
-      .then((r) => r.text())
-      .then((txt) => {
-        const grp = this.meshLoader.parse(txt);
-        // Merge all child mesh geometries into one — flybody OBJs are
-        // single-object; just grab the first mesh's geometry.
-        let merged: THREE.BufferGeometry | null = null;
-        grp.traverse((obj) => {
-          if (!merged && (obj as THREE.Mesh).isMesh) {
-            merged = (obj as THREE.Mesh).geometry as THREE.BufferGeometry;
-          }
-        });
-        if (merged) {
-          // flybody's <default> applies scale="0.1 0.1 0.1" to meshes —
-          // bake that in here so MuJoCo's mjvGeom transforms are correct.
-          (merged as THREE.BufferGeometry).scale(0.1, 0.1, 0.1);
-        }
-        return merged;
-      })
-      .catch(() => null);
-    this.objCache.set(meshId, p);
-    return p;
   }
 
   dispose() {
