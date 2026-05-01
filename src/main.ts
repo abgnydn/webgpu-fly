@@ -248,17 +248,20 @@ async function main() {
 
     // Rates are in [0, 1] per step (1 = spike every step). Boost to a
     // visible commanded velocity, clamp to ±1.
-    // Forward gets the boost; turn is normalised by total activity so
-    // small inherent L/R count imbalances (601 vs 716 DNs in this
-    // dataset) don't get amplified into a permanent bias. Deadband at
-    // |asym| < 0.08 zeroes near-symmetric drive — the fly walks
-    // straight unless the DN imbalance is genuinely asymmetric.
+    // Forward gets the boost; turn requires both (a) genuine activity
+    // (not 1-DN-fires-on-one-side noise) and (b) a real L/R imbalance.
+    // Below 1% mean activity total, the asymmetry signal is unreliable
+    // — clamp to zero so the fly walks straight. Above that, normalise
+    // by total and apply an 8% deadband.
     const gain = 30.0;
-    const total = meanL + meanR + 1e-6;
-    const asym = (meanR - meanL) / total;
-    const asymTrim = Math.abs(asym) < 0.08 ? 0 : asym - Math.sign(asym) * 0.08;
-    const targetFwd  = Math.max(-1, Math.min(1, gain * (meanL + meanR) * 0.5));
-    const targetTurn = Math.max(-1, Math.min(1, asymTrim * 0.8));
+    const total = meanL + meanR;
+    const targetFwd = Math.max(-1, Math.min(1, gain * total * 0.5));
+    let targetTurn = 0;
+    if (total > 0.01) {
+      const asym = (meanR - meanL) / (total + 1e-6);
+      const asymTrim = Math.abs(asym) < 0.08 ? 0 : asym - Math.sign(asym) * 0.08;
+      targetTurn = Math.max(-1, Math.min(1, asymTrim * 0.8));
+    }
 
     // Smoothing — exponential blend so gait feels less jittery.
     const alpha = 0.35;
@@ -459,6 +462,20 @@ async function main() {
     busy = false;
   }
 
+  // Documented motor effect for each famous DN. We have to inject this
+  // directly because our connectome is BRAIN-only — DN axons exit the
+  // brain into the VNC, which isn't modelled, so firing DNa01 in our
+  // sim doesn't cascade to any motor neurons. The brain run still
+  // shows the DN spiking; the body responds via the documented
+  // mapping (drive set after the run completes).
+  const FAMOUS_DN_DRIVE: Record<string, { fwd: number; turn: number }> = {
+    DNa01: { fwd:  0.6, turn: 0   },   // forward walking
+    DNa02: { fwd:  1.0, turn: 0   },   // forward, faster
+    DNb01: { fwd: -0.6, turn: 0   },   // backward — moonwalker
+    DNp01: { fwd:  0.0, turn: 0   },   // freeze (escape jump unmodelled)
+    DNg13: { fwd:  0.3, turn: 0.8 },   // turning while walking
+  };
+
   // --- Famous-DN stim: drive both L+R copies of a named DN ---
   async function runDnStim(name: string, idxs: number[], btn: HTMLButtonElement) {
     if (busy) return;
@@ -493,6 +510,21 @@ async function main() {
     if (recruited > 100) {
       const snaps = [...Array(viewer.numSnapshots)].map((_, j) => viewer["snapshots"][j] as Float32Array);
       logHeroValidation(snaps);
+    }
+
+    // Apply documented motor effect (VNC stand-in mapping). The brain
+    // just showed the DN firing; now we set the body drive that the
+    // real fly's VNC would produce in response. We have to inject this
+    // directly because the connectome is brain-only — DN axons exit
+    // into the VNC, which we don't model, so DNa01 firing in our sim
+    // doesn't cascade to motor neurons on its own.
+    const eff = FAMOUS_DN_DRIVE[name];
+    if (eff) {
+      driveFwd = eff.fwd;
+      driveTurn = eff.turn;
+      room.setDrive(driveFwd, driveTurn);
+      driveReadout.textContent = `fwd ${driveFwd.toFixed(2)}  turn ${driveTurn.toFixed(2)}  (${name} canonical)`;
+      log(`applied ${name} canonical motor: fwd=${eff.fwd} turn=${eff.turn}`, "ok");
     }
 
     scrub.max = String(viewer.numSnapshots - 1);
@@ -530,10 +562,10 @@ async function main() {
     sim.reset();
     viewer.clearSnapshots();
     room.resetFly();
-    // Limit how many optic neurons we drive each tick — 77k×2 driven
-    // hard each tick is overkill and risks runaway. Sample 500 from
-    // each side. Indices are fixed across ticks.
-    const sampleN = 500;
+    // Sample 4000 optic neurons per side — enough cascade to reach DN
+    // through the connectome's optic→central wiring. Below ~2000 the
+    // signal dissipates before producing meaningful DN activity.
+    const sampleN = 4000;
     const stride = Math.max(1, Math.floor(opticLeft.length / sampleN));
     const lSubset: number[] = [];
     for (let i = 0; i < opticLeft.length; i += stride) lSubset.push(opticLeft[i]);
@@ -551,14 +583,12 @@ async function main() {
       const fov = Math.PI / 2;
       ext.fill(0);
       if (Number.isFinite(angle) && Math.abs(angle) < fov) {
-        // Drive ipsilateral optic neurons more strongly than contra.
-        // Real fly: target on left visual field activates LEFT optic.
-        // But the brain's recurrent wiring inverts this for steering —
-        // we just push the raw signal in and trust the connectome.
         const align = 1 - Math.abs(angle) / fov;     // 0..1
-        const lScale = align * (angle > 0 ? 1.0 : 0.3);  // strong on side facing target
+        const lScale = align * (angle > 0 ? 1.0 : 0.3);
         const rScale = align * (angle < 0 ? 1.0 : 0.3);
-        const amp = 0.4 + 0.6 / Math.max(1, dist);   // closer → brighter
+        // Amplitude bumped to overcome the silenced-edge floor in our
+        // optic→central path. Closer target → brighter.
+        const amp = (1.5 + 1.5 / Math.max(1, dist));
         for (const i of lSubset) ext[i] = amp * lScale;
         for (const i of rSubset) ext[i] = amp * rScale;
       }
