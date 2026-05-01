@@ -204,7 +204,13 @@ export class Physics {
     for (const id of this.clawAdhesionIds) ctrl[id] = 1.0;
     if (!this.wingActs) return;
     const t = this.data.time as number;
-    const a = Math.max(0, Math.min(1, amp));
+    // Cap overall amplitude. flybody's canonical pattern peaks at
+    // pitch ≈ 2.15 — that IS the full-flight amplitude meant to lift
+    // a real fly. With our claw-adhesion-only grounding, anything
+    // above ~0.25 produces enough lift to launch the freejoint body.
+    // Real flight needs the full RL-trained controller (flight_imitation
+    // task) coordinating wings + body pitch + abdomen.
+    const a = Math.max(0, Math.min(1, amp)) * 0.2;
     const k = Math.max(-1, Math.min(1, asym)) * 0.4;   // ±40% L/R bias
     const aL = a * (1 - k);
     const aR = a * (1 + k);
