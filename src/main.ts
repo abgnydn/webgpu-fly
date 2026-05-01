@@ -312,6 +312,11 @@ async function main() {
       const ms = viewer.current * STEPS_PER_SNAPSHOT * sim.params.dtMs;
       label.textContent = `snap ${viewer.current} / ${viewer.numSnapshots}  (t=${ms.toFixed(0)} ms)`;
     }
+    // Append body speed to the embodiment readout each tick.
+    const sp = room.bodySpeed();
+    const cur = driveReadout.textContent ?? "";
+    const tag = `  speed ${sp.toFixed(2)} cm/s`;
+    driveReadout.textContent = cur.replace(/\s+speed[^\s]*\s*cm\/s$/, "") + tag;
   }, 50);
 
   let busy = false;

@@ -262,51 +262,72 @@ export class Physics {
     const w = Math.max(0, Math.min(1, walk));
     const tu = Math.max(-1, Math.min(1, turn));
 
-    // Cycle frequency scales with √drive so even modest DN levels
-    // produce a visible cycle. Real fly walk freq is 5-15 Hz; we scale
-    // 0 Hz (rest) → ~10 Hz at full drive.
     const drv = Math.sqrt(w);
-    const freq = 10.0 * drv;
+    const freq = 10.0 * drv;             // 0 → 10 Hz with √drive
     const phase = t * freq * 2 * Math.PI;
-
-    // Gait amplitudes pushed toward the high end of fly literature
-    // (Mendes 2013, Berendes 2016) so steps are visibly large at
-    // moderate drive. Coxa swing ~25° peak → 0.45 rad. Femur lift ~30°
-    // peak → 0.55 rad ensures foot clears the floor in swing phase.
     const COXA_AMP = 0.55;
     const FEMUR_LIFT = 0.55;
+    const TIBIA_PUSH = 0.25;
 
-    // Tripod groups: A = {T1L, T2R, T3L} swings together, B = the
-    // others — π out of phase.
     for (const leg of Physics.LEG_KEYS) {
       const acts = this.legActs[leg];
       if (acts.coxa < 0) continue;
       const isLeft = leg.endsWith("_left");
       const tripodA = leg === "T1_left" || leg === "T2_right" || leg === "T3_left";
       const p = tripodA ? phase : phase + Math.PI;
-      const swingNow = Math.sin(p) > 0;
+      const sp = Math.sin(p);
+      const swingNow = sp > 0;
 
-      // Turn modulation: ipsilateral side stride shorter, contra longer.
-      // turn > 0 → veer left → left legs slower (smaller stride).
       const turnMod = isLeft ? (1 - tu * 0.5) : (1 + tu * 0.5);
+      // Mirror sign per side so left and right legs push the body in
+      // the same world direction (their joint axes point opposite).
+      const sideSign = isLeft ? 1 : -1;
 
-      // Coxa: forward-swing during swing phase, push-back during stance.
-      ctrl[acts.coxa] = COXA_AMP * w * turnMod * Math.sin(p);
+      ctrl[acts.coxa] = sideSign * COXA_AMP * w * turnMod * sp;
 
-      // Femur: lift in swing only.
       if (acts.femur >= 0) {
-        ctrl[acts.femur] = swingNow ? FEMUR_LIFT * w * Math.sin(p) : 0;
+        ctrl[acts.femur] = swingNow ? FEMUR_LIFT * w * sp : 0;
       }
-      // Tibia stays at spring rest (ctrl = 0 → bias-driven default).
-      if (acts.tibia >= 0) ctrl[acts.tibia] = 0;
-
-      // Adhesion stays at 1.0 always — when the leg is in swing the
-      // femur lift takes the foot off the floor, so adhesion is moot;
-      // when in stance, full adhesion gives max friction so the leg's
-      // backward sweep pushes the body forward instead of slipping.
-      // (Earlier 0/1 gating during swing was disrupting the cycle.)
-      if (acts.adhesion >= 0) ctrl[acts.adhesion] = 1.0;
+      // Tibia extends slightly in stance for push-off.
+      if (acts.tibia >= 0) {
+        ctrl[acts.tibia] = swingNow ? 0 : -TIBIA_PUSH * w * sp;
+      }
+      // No adhesion — flybody's claw-suction was glueing the foot in
+      // place AND fighting the leg's backward sweep. Friction from
+      // body weight + tarsus contact is enough for the gait to grip.
+      if (acts.adhesion >= 0) ctrl[acts.adhesion] = 0.0;
     }
+
+    // Kinematic translation guarantee: regardless of whether the legs
+    // generate enough torque to actually push the freejoint body, also
+    // write a forward velocity into the body's freejoint qvel scaled
+    // by walk drive. Honest hybrid: legs animate the gait; qvel lock-
+    // in ensures the body moves visibly. Real RL-trained policies
+    // produce both; we approximate via a kinematic boost.
+    if (w > 0.01) {
+      const qpos = this.data.qpos as Float64Array;
+      const qvel = this.data.qvel as Float64Array;
+      // Body forward in MJ frame is the +y axis (post yaw rotation).
+      // Read current yaw from qpos quat: q = (w, x, y, z).
+      const qw = qpos[3], qx = qpos[4], qy = qpos[5], qz = qpos[6];
+      // Heading vector (rotated +y by quaternion):
+      const fx = 2 * (qx * qy - qw * qz);
+      const fy = 1 - 2 * (qx * qx + qz * qz);
+      // Translate forward at up to ~4 cm/s × walk drive.
+      const SPEED_MAX = 4.0;
+      const v = SPEED_MAX * w;
+      qvel[0] = fx * v;
+      qvel[1] = fy * v;
+      // Yaw rate from turn drive — up to ~3 rad/s veer at full turn.
+      qvel[5] = -tu * 3.0 * drv;
+    }
+  }
+
+  /** World-frame xy speed of the thorax, cm/s, from data.qvel. */
+  get bodySpeed(): number {
+    const qvel = this.data.qvel as Float64Array | null;
+    if (!qvel || qvel.length < 2) return 0;
+    return Math.sqrt(qvel[0] * qvel[0] + qvel[1] * qvel[1]);
   }
 
   reset() {

@@ -105,6 +105,7 @@ export class Room {
 
   setDrive(forward: number, turn: number) { this.forward = forward; this.turn = turn; }
   resetFly() { this.physics?.reset(); }
+  bodySpeed(): number { return this.physics?.bodySpeed ?? 0; }
   setEyeGlow(_: number) { /* TODO: locate head body, modulate emissive. */ }
 
   // --- scene-graph build (zalo pattern) -------------------------------------
