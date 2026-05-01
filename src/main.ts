@@ -221,12 +221,17 @@ async function main() {
 
     // Rates are in [0, 1] per step (1 = spike every step). Boost to a
     // visible commanded velocity, clamp to ±1.
-    // Forward gets the boost; turn dialed down so symmetric DN drive
-    // walks the fly instead of spinning it. Asymmetric drive still
-    // produces a clear bias.
+    // Forward gets the boost; turn is normalised by total activity so
+    // small inherent L/R count imbalances (601 vs 716 DNs in this
+    // dataset) don't get amplified into a permanent bias. Deadband at
+    // |asym| < 0.08 zeroes near-symmetric drive — the fly walks
+    // straight unless the DN imbalance is genuinely asymmetric.
     const gain = 30.0;
+    const total = meanL + meanR + 1e-6;
+    const asym = (meanR - meanL) / total;
+    const asymTrim = Math.abs(asym) < 0.08 ? 0 : asym - Math.sign(asym) * 0.08;
     const targetFwd  = Math.max(-1, Math.min(1, gain * (meanL + meanR) * 0.5));
-    const targetTurn = Math.max(-1, Math.min(1, gain * (meanR - meanL) * 0.6));
+    const targetTurn = Math.max(-1, Math.min(1, asymTrim * 0.8));
 
     // Smoothing — exponential blend so gait feels less jittery.
     const alpha = 0.35;
