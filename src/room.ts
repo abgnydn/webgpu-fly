@@ -161,16 +161,20 @@ export class Room {
   }
 
   private updateCameraFromOrbit() {
-    const tx = this.bodyGroups[1] ? this.bodyGroups[1].position.x * VISUAL_SCALE : 0;
-    const tz = this.bodyGroups[1] ? this.bodyGroups[1].position.z * VISUAL_SCALE : 0;
+    // Track the thorax (body id 1) in world frame — bodyGroups[].position
+    // is in MJ cm; the rootGroup scales by VISUAL_SCALE.
+    const tho = this.bodyGroups[1];
+    const tx = tho ? tho.position.x * VISUAL_SCALE : 0;
+    const ty = tho ? tho.position.y * VISUAL_SCALE : 0;
+    const tz = tho ? tho.position.z * VISUAL_SCALE : 0;
     const ce = Math.cos(this.elevation), se = Math.sin(this.elevation);
     const ca = Math.cos(this.azimuth), sa = Math.sin(this.azimuth);
     this.camera.position.set(
       tx + this.radius * ce * sa,
-      this.radius * se + 1,
+      ty + this.radius * se,
       tz + this.radius * ce * ca,
     );
-    this.camera.lookAt(tx, 1, tz);
+    this.camera.lookAt(tx, ty, tz);
   }
 
   /** No-op for now; eyes were on the procedural fly. */

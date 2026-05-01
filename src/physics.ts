@@ -43,7 +43,18 @@ export class Physics {
     p.mujoco = await loadMujoco();
 
     onProgress?.("fetching fruitfly.xml");
-    const xmlText = await (await fetch("/flybody/fruitfly.xml")).text();
+    let xmlText = await (await fetch("/flybody/fruitfly.xml")).text();
+
+    // fruitfly.xml is a body-only model — no floor, no environment. Inject
+    // a plane at z=0 so the fly has somewhere to land. condim=3 +
+    // moderate friction so the legs grip; size is huge so the fly can't
+    // walk off.
+    xmlText = xmlText.replace(
+      "<worldbody>",
+      `<worldbody>
+        <geom name="floor" type="plane" size="200 200 0.01" pos="0 0 0" rgba="0.06 0.07 0.10 1" condim="3" friction="1 0.005 0.0001" contype="1" conaffinity="1"/>
+        <light name="top" pos="0 0 5" dir="0 0 -1" diffuse="0.4 0.4 0.4"/>`,
+    );
 
     // Discover mesh files referenced by the XML so we can preload them
     // into the VFS. Anything in `file="…"` attributes counts.
@@ -104,13 +115,17 @@ export class Physics {
     // attachments so the renderer can build a matching scene graph.
     p.bodies = p.collectBodies(xmlText);
 
-    // Apply the model's keyframe (rest pose) if it has one — keeps the
-    // fly from collapsing in t=0 before stepping.
-    if (p.model.nkey > 0) {
-      p.mujoco.mj_resetDataKeyframe(p.model, p.data, 0);
-    } else {
-      p.mujoco.mj_resetData(p.model, p.data);
+    // fruitfly.xml declares nkey=1 but ships no keyframe data, so reset
+    // to defaults. Then lift the freejoint thorax above the floor we
+    // just injected, and run forward kinematics so xpos/xquat are
+    // populated even before the first physics step.
+    p.mujoco.mj_resetData(p.model, p.data);
+    const qpos = p.data.qpos as Float64Array;
+    if (qpos.length >= 7) {
+      qpos[0] = 0; qpos[1] = 0; qpos[2] = 0.5;   // thorax 5 mm above floor
+      qpos[3] = 1; qpos[4] = 0; qpos[5] = 0; qpos[6] = 0;  // identity quat
     }
+    p.mujoco.mj_forward(p.model, p.data);
 
     onProgress?.(`flybody ready (${p.nbody} bodies)`);
     return p;
@@ -130,11 +145,13 @@ export class Physics {
   }
 
   reset() {
-    if (this.model.nkey > 0) {
-      this.mujoco.mj_resetDataKeyframe(this.model, this.data, 0);
-    } else {
-      this.mujoco.mj_resetData(this.model, this.data);
+    this.mujoco.mj_resetData(this.model, this.data);
+    const qpos = this.data.qpos as Float64Array;
+    if (qpos.length >= 7) {
+      qpos[0] = 0; qpos[1] = 0; qpos[2] = 0.5;
+      qpos[3] = 1; qpos[4] = 0; qpos[5] = 0; qpos[6] = 0;
     }
+    this.mujoco.mj_forward(this.model, this.data);
   }
 
   dispose() {
