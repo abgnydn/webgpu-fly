@@ -20,7 +20,7 @@ export interface RoomOpts {
 }
 
 const VISUAL_SCALE = 6;          // MJ cm × 6 → TJ units; ~3 cm fly → ~18 TJ
-const FLOOR_TILE = 12;           // visual grid helper extent
+const FLOOR_TILE = 60;           // wide enough to fit fly + 3 cm-ahead target
 
 /** target.set( x, z, -y ) — converts MJ z-up to TJ y-up. */
 function swizzlePos(buf: Float32Array | Float64Array, idx: number, target: THREE.Vector3) {
@@ -53,16 +53,18 @@ export class Room {
   private rafId = 0;
 
   // Closed-loop visual target (a glowing sphere the fly can "see").
+  // Placed dead ahead of the fly's spawn (heading is MJ +y after
+  // reset), 3 cm in front, at thorax height. This guarantees the
+  // target starts inside the camera FOV.
   private target: THREE.Mesh | null = null;
-  /** Target position in MuJoCo world frame (cm), z-up. */
-  targetPos: [number, number, number] = [3.0, 0, 0.13];
+  targetPos: [number, number, number] = [0, 3.0, 0.13];
 
   // orbit
   private isDragging = false;
   private prev = { x: 0, y: 0 };
   private azimuth = 0.5;
   private elevation = 0.4;
-  private radius = 12;
+  private radius = 30;             // wide enough to see fly + target
 
   // drive (Phase 2.1 will use this for actuator control)
   private forward = 0;
@@ -100,7 +102,9 @@ export class Room {
     // Glowing red target — placed at MuJoCo world (3, 0, 0.13) cm,
     // i.e. 3 cm in front of the fly's spawn at fly head height. Sits
     // inside the mjRoot so it shares the y-up rotation + scale.
-    const targetGeo = new THREE.SphereGeometry(0.15, 16, 12);
+    // Target ~5 mm radius in MJ frame so it's visible from a 30-unit
+    // orbit camera even with VISUAL_SCALE=6.
+    const targetGeo = new THREE.SphereGeometry(0.5, 16, 12);
     const targetMat = new THREE.MeshStandardMaterial({
       color: 0xff3a3a, emissive: 0xff1010, emissiveIntensity: 1.5,
       roughness: 0.4, metalness: 0.1,

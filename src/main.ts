@@ -588,8 +588,10 @@ async function main() {
       // Sense: angle from fly heading to target. + = target on fly's left.
       const angle = room.targetAngle();
       const dist = room.targetDistance();
-      // Out of FOV (>90°) → no optic drive.
-      const fov = Math.PI / 2;
+      // FOV ~150° — real fruit flies have nearly panoramic vision.
+      // Wider than ½π lets the closed-loop start tracking even when
+      // the target is well off-axis from the fly's current heading.
+      const fov = (150 / 180) * Math.PI;
       ext.fill(0);
       if (Number.isFinite(angle) && Math.abs(angle) < fov) {
         const align = 1 - Math.abs(angle) / fov;     // 0..1
