@@ -16,8 +16,11 @@ export interface RoomOpts {
   bg?: number;
 }
 
-const FLOOR_SIZE = 4;
-const VISUAL_SCALE = 25;  // MJ cm × 25 → TJ units; fly thorax ≈ 7.5 TJ
+// Fly is ~0.5 cm long after the MJCF's 0.1 mesh scale. Scale up to a
+// handful of TJ units so it fits comfortably in the camera frame at a
+// few-units radius. Floor is matched to fly footprint.
+const VISUAL_SCALE = 8;   // 0.5 cm × 8 → ~4 TJ-long fly
+const FLOOR_SIZE = 12;
 
 // Backport of CapsuleGeometry — verbatim from the official demo.
 class FlybodyCapsuleGeometry extends THREE.BufferGeometry {
@@ -54,8 +57,8 @@ export class Room {
   private prev = { x: 0, y: 0 };
   private azimuth = 0.5;
   private elevation = 0.4;
-  private radius = 6;
-  private lookY = 1;     // dynamic lookAt y, follows fly thorax
+  private radius = 8;
+  private lookY = 4;     // dynamic lookAt y, follows fly thorax
 
   // commanded velocity placeholder (will drive actuators in Phase 2.1)
   private forward = 0;
@@ -178,7 +181,7 @@ export class Room {
     el.addEventListener("wheel", (e) => {
       e.preventDefault();
       this.radius *= Math.exp(e.deltaY * 0.001);
-      this.radius = Math.max(0.5, Math.min(40, this.radius));
+      this.radius = Math.max(1, Math.min(120, this.radius));
       this.updateCameraFromOrbit();
     }, { passive: false });
   }
@@ -208,6 +211,12 @@ export class Room {
     const mujoco = phys.mujoco;
     const geoms = phys.scene.geoms;
     const n = geoms.size();
+    // Track thorax (body id 1) world height for camera lookY.
+    const xpos = phys.data.xpos as Float64Array;
+    if (xpos && xpos.length >= 6) {
+      // MJ z = pos[2] of body 1 → TJ y after rotation; × scale at root.
+      this.lookY = xpos[5] * VISUAL_SCALE;
+    }
 
     for (let i = 0; i < n; i++) {
       const g = geoms.get(i);
@@ -232,14 +241,6 @@ export class Room {
         0, 0, 0, 1,
       );
       mesh.matrixWorldNeedsUpdate = true;
-
-      // Track thorax-ish height for camera. Body 1 == thorax in flybody;
-      // its first geom is what we sample. Loose heuristic.
-      if (i === 1) {
-        // pos[2] is the MuJoCo z (height). flyRoot rotates so MJ z → TJ y;
-        // then scale by VISUAL_SCALE to get TJ world y for camera lookY.
-        this.lookY = pos[2] * VISUAL_SCALE;
-      }
 
       g.delete();
     }
