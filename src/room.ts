@@ -117,7 +117,9 @@ export class Room {
       this.radius * se + 2,
       this.radius * ce * ca,
     );
-    this.camera.lookAt(this.fly.group.position.x, 1, this.fly.group.position.z);
+    const tx = this.fly ? this.fly.group.position.x : 0;
+    const tz = this.fly ? this.fly.group.position.z : 0;
+    this.camera.lookAt(tx, 1, tz);
   }
 
   private attachInput() {
