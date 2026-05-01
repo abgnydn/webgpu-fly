@@ -36,31 +36,21 @@ export class Physics {
     onProgress?.("loading mujoco_wasm");
     p.mujoco = await loadMujoco();
 
-    onProgress?.("fetching fruitfly.xml");
-    let xmlText = await (await fetch("/flybody/fruitfly.xml")).text();
+    // Use flybody's canonical entry point: build_fruitfly/floor.xml does
+    //   <include file="fruitfly.xml"/> + floor plane + grid texture +
+    //   skybox, exactly what the official Python wrapper composes.
+    // We load both into the VFS so MuJoCo's <include> resolves it
+    // without any string surgery on our end.
+    onProgress?.("fetching floor.xml + fruitfly.xml");
+    const [floorText, flyText] = await Promise.all([
+      fetch("/flybody/floor.xml").then((r) => r.text()),
+      fetch("/flybody/fruitfly.xml").then((r) => r.text()),
+    ]);
 
-    // Inject a floor + top light into the body-only fruitfly.xml so the
-    // fly has somewhere to land and the right pane gets some sky light.
-    // Floor + skybox + grid material lifted from flybody's own
-    // build_fruitfly/floor.xml (TuragaLab, github), with the same z=-0.15
-    // floor offset so the canonical _SPAWN_POS=(0,0,0.1278) stands cleanly.
-    xmlText = xmlText.replace(
-      "<asset>",
-      `<asset>
-        <texture name="floor_grid" type="2d" builtin="checker" rgb1=".1 .2 .3" rgb2=".2 .3 .4" width="300" height="300" mark="edge" markrgb=".2 .3 .4"/>
-        <material name="floor_grid" texture="floor_grid" texrepeat="1 1" texuniform="true" reflectance=".2"/>`,
-    );
-    xmlText = xmlText.replace(
-      "<worldbody>",
-      `<worldbody>
-        <geom name="floor" type="plane" size="5 5 0.1" material="floor_grid" pos="0 0 -0.15" solref="0.0002 1" condim="3" friction="1 0.005 0.0001" contype="1" conaffinity="1"/>
-        <light name="top" pos="0 0 5" dir="0 0 -1" diffuse="0.4 0.4 0.4"/>`,
-    );
-
-    // Discover mesh files referenced and bin-load them into the VFS.
+    // Mesh refs come from fruitfly.xml; floor.xml only has texture refs.
     const meshFiles = Array.from(
       new Set(
-        Array.from(xmlText.matchAll(/file="([^"]+)"/g), (m) => m[1])
+        Array.from(flyText.matchAll(/file="([^"]+)"/g), (m) => m[1])
           .filter((f) => f.endsWith(".obj")),
       ),
     );
@@ -99,9 +89,13 @@ export class Physics {
     });
     onProgress?.(`fetched all meshes in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
 
+    // The compiler resolves `<include file="fruitfly.xml"/>` from the
+    // VFS, so we have to register fruitfly.xml there as well.
+    p.vfs.addBuffer("fruitfly.xml", new TextEncoder().encode(flyText));
+
     onProgress?.("compiling MJCF (synchronous; tab may freeze ~5-15s)");
     const tCompile = performance.now();
-    p.model = p.mujoco.MjModel.from_xml_string(xmlText, p.vfs);
+    p.model = p.mujoco.MjModel.from_xml_string(floorText, p.vfs);
     p.data = new p.mujoco.MjData(p.model);
     onProgress?.(`MJCF compiled in ${((performance.now() - tCompile) / 1000).toFixed(1)} s`);
 
@@ -127,7 +121,7 @@ export class Physics {
     // → OBJ when it encounters mjGEOM_MESH geoms.
     const nmesh = p.model.nmesh as number;
     const xmlMeshFile = new Map<string, string>();
-    for (const m of xmlText.matchAll(/<mesh\s+name="([^"]+)"\s+file="([^"]+)"\s*\/?>/g)) {
+    for (const m of flyText.matchAll(/<mesh\s+name="([^"]+)"\s+file="([^"]+)"\s*\/?>/g)) {
       xmlMeshFile.set(m[1], m[2]);
     }
     for (let i = 0; i < nmesh; i++) {
