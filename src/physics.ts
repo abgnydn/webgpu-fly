@@ -28,6 +28,10 @@ export class Physics {
 
   /** mesh id (mujoco mesh table index) → OBJ filename. */
   meshFileById: string[] = [];
+  /** Body-velocity command from the VNC layer; re-asserted every
+   *  substep inside step() so damping/gravity don't drain it. */
+  private fwdCmd = 0;
+  private turnCmd = 0;
   /** Cached wing actuator ids by axis × side (flybody convention). */
   private wingActs: { yawL: number; yawR: number; rollL: number; rollR: number; pitchL: number; pitchR: number } | null = null;
   /** Cached per-leg actuator ids for the VNC stand-in CPG. */
@@ -238,9 +242,23 @@ export class Physics {
     );
   }
 
-  /** Step the simulation N times. Phase 2.1 will wire actuator drive. */
+  /** Step physics N times. Re-asserts the kinematic body command on
+   *  every substep so MuJoCo damping doesn't drain it between writes. */
   step(substeps = 1) {
+    const hasCmd = Math.abs(this.fwdCmd) > 0.01 || Math.abs(this.turnCmd) > 0.01;
     for (let s = 0; s < substeps; s++) {
+      if (hasCmd) {
+        const qpos = this.data.qpos as Float64Array;
+        const qvel = this.data.qvel as Float64Array;
+        const qw = qpos[3], qx = qpos[4], qy = qpos[5], qz = qpos[6];
+        const fx = 2 * (qx * qy - qw * qz);
+        const fy = 1 - 2 * (qx * qx + qz * qz);
+        const drv = Math.sqrt(Math.abs(this.fwdCmd));
+        const v = 4.0 * this.fwdCmd;       // signed: negative → backward
+        qvel[0] = fx * v;
+        qvel[1] = fy * v;
+        qvel[5] = -this.turnCmd * 3.0 * Math.max(0.5, drv);
+      }
       this.mujoco.mj_step(this.model, this.data);
     }
   }
@@ -259,7 +277,10 @@ export class Physics {
   driveLegs(walk: number, turn = 0) {
     const ctrl = this.data.ctrl as Float64Array;
     const t = this.data.time as number;
-    const w = Math.max(0, Math.min(1, walk));
+    // walk magnitude drives leg cycle visibly; sign drives the
+    // kinematic body command (so DNb01 moonwalker can scoot backward).
+    const walkSigned = Math.max(-1, Math.min(1, walk));
+    const w = Math.abs(walkSigned);
     const tu = Math.max(-1, Math.min(1, turn));
 
     const drv = Math.sqrt(w);
@@ -298,29 +319,18 @@ export class Physics {
       if (acts.adhesion >= 0) ctrl[acts.adhesion] = 0.0;
     }
 
-    // Kinematic translation guarantee: regardless of whether the legs
-    // generate enough torque to actually push the freejoint body, also
-    // write a forward velocity into the body's freejoint qvel scaled
-    // by walk drive. Honest hybrid: legs animate the gait; qvel lock-
-    // in ensures the body moves visibly. Real RL-trained policies
-    // produce both; we approximate via a kinematic boost.
-    if (w > 0.01) {
-      const qpos = this.data.qpos as Float64Array;
-      const qvel = this.data.qvel as Float64Array;
-      // Body forward in MJ frame is the +y axis (post yaw rotation).
-      // Read current yaw from qpos quat: q = (w, x, y, z).
-      const qw = qpos[3], qx = qpos[4], qy = qpos[5], qz = qpos[6];
-      // Heading vector (rotated +y by quaternion):
-      const fx = 2 * (qx * qy - qw * qz);
-      const fy = 1 - 2 * (qx * qx + qz * qz);
-      // Translate forward at up to ~4 cm/s × walk drive.
-      const SPEED_MAX = 4.0;
-      const v = SPEED_MAX * w;
-      qvel[0] = fx * v;
-      qvel[1] = fy * v;
-      // Yaw rate from turn drive — up to ~3 rad/s veer at full turn.
-      qvel[5] = -tu * 3.0 * drv;
-    }
+    // Stash kinematic command — physics.step's substep loop reads
+    // these and re-asserts qvel before every mj_step so damping can't
+    // drain the velocity between writes.
+    this.fwdCmd = walkSigned;
+    this.turnCmd = tu;
+  }
+
+  /** Allow callers to send raw fwd/turn (for hybrid drives like the
+   *  famous-DN buttons) without going through the leg actuator path. */
+  setBodyCommand(fwd: number, turn: number) {
+    this.fwdCmd = fwd;
+    this.turnCmd = turn;
   }
 
   /** World-frame xy speed of the thorax, cm/s, from data.qvel. */

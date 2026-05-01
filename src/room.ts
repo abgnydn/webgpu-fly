@@ -415,9 +415,11 @@ export class Room {
         // Brain → VNC stand-in → body. Two motor primitives selected
         // by DN drive: tripod walk gait (amplitude = forward) and
         // wing-buzz hover (amplitude = remaining drive after walking).
-        // sqrt boost so even modest DN drive (e.g., olfactory's ~0.1)
-        // produces a visible step, not a barely-perceptible shuffle.
-        const walkAmp = Math.min(1, Math.sqrt(Math.max(0, this.forward)));
+        // Preserve sign of forward so DNb01's moonwalker (negative
+        // forward) scoots backward. sqrt-on-magnitude boosts leg
+        // visibility at low drive without flipping direction.
+        const sign = this.forward < 0 ? -1 : 1;
+        const walkAmp = sign * Math.min(1, Math.sqrt(Math.abs(this.forward)));
         this.physics.driveLegs(walkAmp, this.turn);
         // Wings get a smaller buzz — secondary behavior unless the
         // fly is "trying to fly" (idle freq buzz when active).
