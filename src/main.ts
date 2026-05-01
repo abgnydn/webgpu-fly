@@ -162,9 +162,12 @@ async function main() {
 
     // Rates are in [0, 1] per step (1 = spike every step). Boost to a
     // visible commanded velocity, clamp to ±1.
+    // Forward gets the boost; turn dialed down so symmetric DN drive
+    // walks the fly instead of spinning it. Asymmetric drive still
+    // produces a clear bias.
     const gain = 30.0;
-    const targetFwd = Math.max(-1, Math.min(1, gain * (meanL + meanR) * 0.5));
-    const targetTurn = Math.max(-1, Math.min(1, gain * (meanR - meanL) * 1.5));
+    const targetFwd  = Math.max(-1, Math.min(1, gain * (meanL + meanR) * 0.5));
+    const targetTurn = Math.max(-1, Math.min(1, gain * (meanR - meanL) * 0.6));
 
     // Smoothing — exponential blend so gait feels less jittery.
     const alpha = 0.35;

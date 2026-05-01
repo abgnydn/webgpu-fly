@@ -176,13 +176,13 @@ export class Room {
       const g = this.fly.group;
       let speed: number;
       if (this.physics) {
-        // Real-physics path: MuJoCo owns body pose. Map MuJoCo (x, y, yaw,
-        // z-up) → Three.js (x, z, -yaw, y-up). The y-up sign flip on yaw
-        // keeps the visual rotation chirality consistent.
+        // Real-physics path: MuJoCo owns body pose. Basis change MJ→TJ is
+        // (x, y, z) → (x, z, -y), which has det=+1, so MJ yaw around +z
+        // passes straight through to TJ rotation around +y (no sign flip).
         const pose = this.physics.step(this.forward, this.turn);
         g.position.x = pose.x;
         g.position.z = -pose.y;
-        g.rotation.y = -pose.yaw;
+        g.rotation.y = pose.yaw;
         speed = Math.abs(this.forward * 4.0);
       } else {
         // Fallback (pre-physics-load) — kinematic integration.

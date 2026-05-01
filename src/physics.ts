@@ -64,9 +64,12 @@ export class Physics {
     const yaw = qpos[2];
     // Body-frame forward maps to world via yaw rotation.
     // Body +y is "forward"; rotated by yaw around +z, world dx = -sin(yaw)*v, dy = cos(yaw)*v.
+    // Body forward = local -y in MJ (so that the procedural fly's head,
+    // which sits at TJ +z = MJ -y after the axis swap, leads the motion).
+    // World velocity = R(yaw) · (0, -v, 0) = (sin(yaw)·v, -cos(yaw)·v).
     const v = forward * FORWARD_SPEED_SCALE;
-    ctrl[0] = -Math.sin(yaw) * v;
-    ctrl[1] =  Math.cos(yaw) * v;
+    ctrl[0] =  Math.sin(yaw) * v;
+    ctrl[1] = -Math.cos(yaw) * v;
     ctrl[2] = turn * TURN_RATE_SCALE;
     for (let s = 0; s < substeps; s++) {
       this.mujoco.mj_step(this.model, this.data);
