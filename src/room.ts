@@ -126,6 +126,8 @@ export class Room {
   setDrive(forward: number, turn: number) { this.forward = forward; this.turn = turn; }
   resetFly() { this.physics?.reset(); }
   bodySpeed(): number { return this.physics?.bodySpeed ?? 0; }
+  /** Triggers DNp01 escape-jump: instantaneous upward impulse. */
+  jumpImpulse(speed: number) { this.physics?.jumpImpulse(speed); }
 
   /**
    * Sensor read for closed-loop control. Returns the signed horizontal

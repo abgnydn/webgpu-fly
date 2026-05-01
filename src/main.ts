@@ -471,12 +471,12 @@ async function main() {
   // sim doesn't cascade to any motor neurons. The brain run still
   // shows the DN spiking; the body responds via the documented
   // mapping (drive set after the run completes).
-  const FAMOUS_DN_DRIVE: Record<string, { fwd: number; turn: number }> = {
-    DNa01: { fwd:  0.6, turn: 0   },   // forward walking
-    DNa02: { fwd:  1.0, turn: 0   },   // forward, faster
-    DNb01: { fwd: -0.6, turn: 0   },   // backward — moonwalker
-    DNp01: { fwd:  0.0, turn: 0   },   // freeze (escape jump unmodelled)
-    DNg13: { fwd:  0.3, turn: 0.8 },   // turning while walking
+  const FAMOUS_DN_DRIVE: Record<string, { fwd: number; turn: number; jump?: number }> = {
+    DNa01: { fwd:  0.6, turn: 0   },           // forward walking
+    DNa02: { fwd:  1.0, turn: 0   },           // forward, faster
+    DNb01: { fwd: -0.6, turn: 0   },           // backward — moonwalker
+    DNp01: { fwd:  0.0, turn: 0,   jump: 30 }, // Giant Fiber escape jump
+    DNg13: { fwd:  0.3, turn: 0.8 },           // turning while walking
   };
 
   // --- Famous-DN stim: drive both L+R copies of a named DN ---
@@ -526,8 +526,10 @@ async function main() {
       driveFwd = eff.fwd;
       driveTurn = eff.turn;
       room.setDrive(driveFwd, driveTurn);
+      if (eff.jump) room.jumpImpulse(eff.jump);
       driveReadout.textContent = `fwd ${driveFwd.toFixed(2)}  turn ${driveTurn.toFixed(2)}  (${name} canonical)`;
-      log(`applied ${name} canonical motor: fwd=${eff.fwd} turn=${eff.turn}`, "ok");
+      const jumpTag = eff.jump ? ` jump=${eff.jump}cm/s` : "";
+      log(`applied ${name} canonical motor: fwd=${eff.fwd} turn=${eff.turn}${jumpTag}`, "ok");
     }
 
     scrub.max = String(viewer.numSnapshots - 1);

@@ -256,17 +256,27 @@ export class Physics {
         const fx = 1 - 2 * (qy * qy + qz * qz);
         const fy = 2 * (qx * qy + qw * qz);
         const drv = Math.sqrt(Math.abs(this.fwdCmd));
-        const v = 2.0 * this.fwdCmd;        // gentler peak (was 4.0)
+        const v = 2.0 * this.fwdCmd;
         qvel[0] = fx * v;
         qvel[1] = fy * v;
-        // Lock pitch + roll: kinematic body translation + planted
-        // feet otherwise produces a face-plant torque. Force angular
-        // velocity in roll (qvel[3]) and pitch (qvel[4]) to zero
-        // each substep so the body stays upright; turn (qvel[5]) is
-        // commanded directly.
         qvel[3] = 0;
         qvel[4] = 0;
         qvel[5] = -this.turnCmd * 3.0 * Math.max(0.5, drv);
+        // Hard upright lock: extract current yaw and rewrite the
+        // freejoint quaternion as pure yaw rotation about +z. Without
+        // this, contact-induced pitch/roll drift accumulates across
+        // substeps and the fly face-plants on the floor when walking.
+        const sinyCosp = 2 * (qw * qz + qx * qy);
+        const cosyCosp = 1 - 2 * (qy * qy + qz * qz);
+        const yaw = Math.atan2(sinyCosp, cosyCosp);
+        const halfYaw = yaw * 0.5;
+        qpos[3] = Math.cos(halfYaw);
+        qpos[4] = 0;
+        qpos[5] = 0;
+        qpos[6] = Math.sin(halfYaw);
+        // Also keep z above the floor — safety net if upward
+        // contact resolution overshoots.
+        if (qpos[2] < 0.05) qpos[2] = 0.13;
       }
       this.mujoco.mj_step(this.model, this.data);
     }
@@ -340,6 +350,14 @@ export class Physics {
   setBodyCommand(fwd: number, turn: number) {
     this.fwdCmd = fwd;
     this.turnCmd = turn;
+  }
+
+  /** Apply an instantaneous vertical impulse to the freejoint body —
+   *  used for the DNp01 (Giant Fiber) escape-jump approximation.
+   *  Real fly take-off velocity is ~30 cm/s upward over ~5 ms. */
+  jumpImpulse(verticalSpeed: number) {
+    const qvel = this.data.qvel as Float64Array;
+    if (qvel && qvel.length >= 3) qvel[2] = verticalSpeed;
   }
 
   /** World-frame xy speed of the thorax, cm/s, from data.qvel. */
