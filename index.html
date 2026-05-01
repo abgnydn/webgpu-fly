@@ -9,12 +9,34 @@
       * { box-sizing: border-box; }
       html, body { margin: 0; height: 100%; background: #06070a; color: #e6e6e6; font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", monospace; }
       #app { display: grid; grid-template-columns: 380px 1fr; height: 100vh; }
-      #side { padding: 18px; overflow-y: auto; border-right: 1px solid #1a1c20; }
-      #side h1 { font-size: 14px; margin: 0 0 12px; letter-spacing: 0.04em; text-transform: uppercase; color: #9ad7ff; }
-      #out { white-space: pre-wrap; font-size: 12px; color: #c2c5ca; }
+      #side { padding: 18px; overflow-y: auto; border-right: 1px solid #1a1c20; display: flex; flex-direction: column; gap: 14px; }
+      #side h1 { font-size: 14px; margin: 0; letter-spacing: 0.04em; text-transform: uppercase; color: #9ad7ff; }
+      #side h2 { font-size: 11px; margin: 0; letter-spacing: 0.06em; text-transform: uppercase; color: #6c7480; }
+
+      #stim-row { display: flex; flex-wrap: wrap; gap: 6px; }
+      .stim-btn {
+        flex: 1 0 calc(50% - 3px);
+        padding: 8px 10px;
+        background: #11161d;
+        color: #c2c5ca;
+        border: 1px solid #232a34;
+        border-radius: 4px;
+        cursor: pointer;
+        font: inherit;
+        text-align: left;
+        transition: background 0.1s, border-color 0.1s;
+      }
+      .stim-btn:hover { background: #1a2735; border-color: #2a3a4d; }
+      .stim-btn.active { background: #1a3a55; border-color: #4a90c8; color: #9ad7ff; }
+      .stim-btn:disabled { opacity: 0.5; cursor: wait; }
+      .stim-btn .label { display: block; font-weight: 600; color: #e6e6e6; margin-bottom: 2px; }
+      .stim-btn .hint { display: block; font-size: 10px; color: #6c7480; }
+
+      #out { white-space: pre-wrap; font-size: 12px; color: #c2c5ca; flex: 1; min-height: 0; overflow-y: auto; }
       #out .ok { color: #6cd28a; }
       #out .warn { color: #f5c542; }
       #out .err { color: #ff6b6b; }
+
       #stage { position: relative; }
       #canvas-container { position: absolute; inset: 0; }
       #controls {
@@ -29,13 +51,17 @@
         padding: 6px 14px; border-radius: 4px; cursor: pointer; font: inherit;
       }
       #controls button:hover { background: #25364a; }
-      #frame-label { min-width: 110px; font-variant-numeric: tabular-nums; color: #9ad7ff; }
+      #frame-label { min-width: 140px; font-variant-numeric: tabular-nums; color: #9ad7ff; font-size: 12px; }
     </style>
   </head>
   <body>
     <div id="app">
       <aside id="side">
         <h1>webgpu-fly</h1>
+        <div>
+          <h2 style="margin-bottom: 6px">Stimulus</h2>
+          <div id="stim-row"></div>
+        </div>
         <pre id="out"></pre>
       </aside>
       <main id="stage">

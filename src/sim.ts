@@ -241,6 +241,22 @@ export class FlySim {
     this.device.queue.writeBuffer(this.paramsBuf, 0, ab);
   }
 
+  /** Hard reset: Vm to v_rest, refrac to 0, both spike bitsets to 0. */
+  reset() {
+    const N = this.brain.header.numNeurons;
+    const words = (N + 31) >>> 5;
+    const vm0 = new Float32Array(N);
+    vm0.fill(this.params.vRest);
+    this.device.queue.writeBuffer(this.vmBuf, 0, vm0);
+    const zerosN = new Uint32Array(N);
+    this.device.queue.writeBuffer(this.refracBuf, 0, zerosN);
+    const zerosW = new Uint32Array(words);
+    this.device.queue.writeBuffer(this.spikesA, 0, zerosW);
+    this.device.queue.writeBuffer(this.spikesB, 0, zerosW);
+    this.step_ = 0;
+    this.prevIsA_ = true;
+  }
+
   /** Set per-neuron external input (will be multiplied by ext_gain in shader). */
   setExternalInput(values: Float32Array) {
     if (values.length !== this.brain.header.numNeurons) {

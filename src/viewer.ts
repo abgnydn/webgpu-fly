@@ -156,6 +156,20 @@ export class FlyViewer {
     tick();
   }
 
+  /** Wipe captured snapshots and reset to baseline colors. */
+  clearSnapshots() {
+    this.snapshots.length = 0;
+    this.currentIdx = 0;
+    this.autoplay = false;
+    const colors = this.colorAttr.array as Float32Array;
+    for (let i = 0; i < colors.length / 3; i++) {
+      colors[3 * i]     = 0.015;
+      colors[3 * i + 1] = 0.015;
+      colors[3 * i + 2] = 0.025;
+    }
+    this.colorAttr.needsUpdate = true;
+  }
+
   /** Add one captured snapshot (per-neuron spike rate in [0, 1]). */
   pushSnapshot(rate: Float32Array) {
     if (rate.length !== this.brain.header.numNeurons) {
