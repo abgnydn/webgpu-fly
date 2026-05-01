@@ -3,6 +3,7 @@
 import { loadBrain, type Brain } from "./brain";
 import { FlySim, DEFAULT_PARAMS } from "./sim";
 import { FlyViewer } from "./viewer";
+import { Room } from "./room";
 
 const SUPER_CLASS = [
   "unknown", "sensory", "ascending", "intrinsic", "central",
@@ -117,6 +118,59 @@ async function main() {
   const viewer = new FlyViewer(brain, { container, pointSize: 1200 });
   log("viewer ready — drag to rotate, wheel to zoom", "ok");
 
+  // --- Embodiment: 3D room with procedural fly under DN drive ---
+  const roomContainer = document.getElementById("room-container") as HTMLDivElement;
+  const room = new Room({ container: roomContainer });
+  const driveReadout = document.getElementById("drive-readout") as HTMLDivElement;
+
+  // Pre-bin DN indices by hemisphere using pos_x relative to brain centroid.
+  // Left hemisphere = pos_x < cx (anatomical left when looking at the brain
+  // from in front). Cache once.
+  let cx = 0, np = 0;
+  for (let i = 0; i < header.numNeurons; i++) {
+    const x = neurons.pos[3 * i];
+    if (x !== 0) { cx += x; np++; }
+  }
+  cx = np > 0 ? cx / np : 0;
+  const dnLeft: number[] = [];
+  const dnRight: number[] = [];
+  for (let i = 0; i < header.numNeurons; i++) {
+    if ((neurons.cellType[i] & 0xff) !== HERO.dn) continue;
+    if (neurons.pos[3 * i] < cx) dnLeft.push(i);
+    else dnRight.push(i);
+  }
+  log(`DN drive : ${dnLeft.length} left + ${dnRight.length} right`);
+
+  let driveFwd = 0, driveTurn = 0; // smoothed
+  function applyDriveFromSnapshot(rate: Float32Array) {
+    let sumL = 0;
+    for (const i of dnLeft) sumL += rate[i];
+    let sumR = 0;
+    for (const i of dnRight) sumR += rate[i];
+    const meanL = dnLeft.length ? sumL / dnLeft.length : 0;
+    const meanR = dnRight.length ? sumR / dnRight.length : 0;
+
+    // Rates are in [0, 1] per step (1 = spike every step). Boost to a
+    // visible commanded velocity, clamp to ±1.
+    const gain = 30.0;
+    const targetFwd = Math.max(-1, Math.min(1, gain * (meanL + meanR) * 0.5));
+    const targetTurn = Math.max(-1, Math.min(1, gain * (meanR - meanL) * 1.5));
+
+    // Smoothing — exponential blend so gait feels less jittery.
+    const alpha = 0.35;
+    driveFwd  = driveFwd  + alpha * (targetFwd  - driveFwd);
+    driveTurn = driveTurn + alpha * (targetTurn - driveTurn);
+
+    room.setDrive(driveFwd, driveTurn);
+    driveReadout.textContent = `fwd ${driveFwd.toFixed(2)}  turn ${driveTurn.toFixed(2)}  L=${meanL.toFixed(3)} R=${meanR.toFixed(3)}`;
+  }
+  function decayDrive() {
+    driveFwd  *= 0.85;
+    driveTurn *= 0.85;
+    room.setDrive(driveFwd, driveTurn);
+    driveReadout.textContent = `fwd ${driveFwd.toFixed(2)}  turn ${driveTurn.toFixed(2)}`;
+  }
+
   if (!("gpu" in navigator)) {
     log("navigator.gpu missing — open in Chrome / Edge", "err");
     return;
@@ -204,15 +258,19 @@ async function main() {
     sim.reset();
     sim.setExternalInput(ext);
     viewer.clearSnapshots();
+    room.resetFly();
 
     const t0 = performance.now();
     for (let s = 0; s < N_SNAPSHOTS; s++) {
       const rate = await sim.captureRollingRate(STEPS_PER_SNAPSHOT);
       viewer.pushSnapshot(rate);
+      applyDriveFromSnapshot(rate);
     }
     const elapsed = performance.now() - t0;
     const totalSteps = N_SNAPSHOTS * STEPS_PER_SNAPSHOT;
     log(`${totalSteps} steps in ${elapsed.toFixed(0)} ms wall (${(elapsed / totalSteps).toFixed(2)} ms/step)`, "ok");
+    // Bring the fly to rest after the stim window ends.
+    for (let k = 0; k < 30; k++) { decayDrive(); await new Promise(r => setTimeout(r, 16)); }
 
     // Per-class peak active count
     const peak = new Map<number, number>();
@@ -264,14 +322,17 @@ async function main() {
     sim.setExternalInput(ext);
     viewer.clearSnapshots();
     viewer.highlightNeuron(idx);
+    room.resetFly();
 
     const t0 = performance.now();
     for (let s = 0; s < N_SNAPSHOTS; s++) {
       const rate = await sim.captureRollingRate(STEPS_PER_SNAPSHOT);
       viewer.pushSnapshot(rate);
+      applyDriveFromSnapshot(rate);
     }
     const elapsed = performance.now() - t0;
     log(`${N_SNAPSHOTS * STEPS_PER_SNAPSHOT} steps in ${elapsed.toFixed(0)} ms`, "ok");
+    for (let k = 0; k < 30; k++) { decayDrive(); await new Promise(r => setTimeout(r, 16)); }
 
     let recruited = 0;
     const last = viewer["snapshots"][viewer.numSnapshots - 1] as Float32Array;
