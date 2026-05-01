@@ -33,7 +33,7 @@ shape is different — see README.
 ```
 Header 64 B:
   magic "WGFLYBRN" (8 B), version u32, num_neurons u32,
-  num_edges u32, flags u32, voxel_to_nm vec3<f32>, reserved
+  num_edges u32, flags u32, voxel_to_nm vec3<f32>, reserved u32[7]
 
 Neurons N×32 B:
   pos_x f32 (nm), pos_y f32 (nm), pos_z f32 (nm),

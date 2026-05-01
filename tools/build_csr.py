@@ -20,7 +20,7 @@ Binary format (authoritative; the WGSL kernel and TS loader must agree):
     num_edges     u32      = E
     flags         u32      bit 0: weights are pre-signed by presynaptic NT
     voxel_to_nm   f32[3]   FAFB14 voxel size in nm (4, 4, 40)
-    reserved      u32[5]
+    reserved      u32[7]   pad to 64 B (8 + 4*4 + 12 + 28 = 64)
 
   [ Neurons — N × 32 B ]
     pos_x         f32      soma_x or pos_x, in nm
@@ -273,7 +273,7 @@ def main() -> int:
         f.write(struct.pack("<III", 1, n_neurons, n_edges))
         f.write(struct.pack("<I", 0x1))  # bit 0: pre-signed weights
         f.write(struct.pack("<fff", *VOXEL_NM))
-        f.write(b"\x00" * (5 * 4))  # reserved
+        f.write(b"\x00" * (7 * 4))  # reserved → header is 64 B total
         # Neurons
         f.write(neurons.tobytes())
         # CSR
