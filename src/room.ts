@@ -355,18 +355,18 @@ export class Room {
   }
 
   private startLoop() {
-    let lastT = performance.now();
-    const tick = (now: number) => {
+    const tick = () => {
       this.rafId = requestAnimationFrame(tick);
-      const dtWall = (now - lastT) / 1000;
-      lastT = now;
       if (this.physics && this.bodies.length) {
-        // flybody MJCF runs at dt=0.0001 s; step ~1/60 s of sim per
-        // render frame so motion looks ~realtime. With 67 bodies this
-        // costs a few ms per tick.
-        const target = Math.min(0.05, dtWall);
-        const subSteps = Math.max(1, Math.round(target / 0.0001));
-        this.physics.step(subSteps);
+        // Demo drive: amplitude = total commanded drive (forward + |turn|)
+        // from DN activity. Brain spikes → DN fires → wings buzz.
+        const buzz = Math.min(1, Math.abs(this.forward) + Math.abs(this.turn));
+        this.physics.driveWings(buzz);
+
+        // flybody MJCF runs at dt=0.0001 s; cap sim per render frame
+        // to keep frame budget sane. 32 substeps ≈ 3.2 ms simulated
+        // per render — enough to see wing flap without melting CPU.
+        this.physics.step(32);
         this.syncBodyTransforms();
       }
       this.updateCameraFromOrbit();

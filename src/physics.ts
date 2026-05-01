@@ -28,6 +28,8 @@ export class Physics {
 
   /** mesh id (mujoco mesh table index) → OBJ filename. */
   meshFileById: string[] = [];
+  /** Cached wing-pitch actuator ids for the simple buzz demo. */
+  private wingActIds: number[] = [];
 
   static async create(onProgress?: (msg: string) => void): Promise<Physics> {
     const p = new Physics();
@@ -147,8 +149,33 @@ export class Physics {
     const grp = p.opt.geomgroup as Uint8Array;
     if (grp && grp.length > 4) grp[4] = 0;
 
-    onProgress?.(`flybody ready (${p.model.nbody} bodies, ${nmesh} meshes)`);
+    // Cache wing-actuator IDs so the renderer can buzz them in response
+    // to descending-neuron drive without doing name lookups every frame.
+    for (const name of [
+      "wing_pitch_left", "wing_pitch_right",
+      "wing_yaw_left", "wing_yaw_right",
+    ]) {
+      const id = p.mujoco.mj_name2id(
+        p.model, p.mujoco.mjtObj.mjOBJ_ACTUATOR.value, name,
+      );
+      if (id >= 0) p.wingActIds.push(id);
+    }
+
+    onProgress?.(`flybody ready (${p.model.nbody} bodies, ${nmesh} meshes, ${p.wingActIds.length} wing actuators)`);
     return p;
+  }
+
+  /**
+   * Demo drive: sinusoidal wing flap at `freqHz` with peak amplitude
+   * `amp` ∈ [0, 1]. Caller picks `amp` from DN activity each frame.
+   */
+  driveWings(amp: number, freqHz = 30) {
+    if (this.wingActIds.length === 0) return;
+    const ctrl = this.data.ctrl as Float64Array;
+    const t = this.data.time as number;
+    const a = Math.max(0, Math.min(1, amp));
+    const s = Math.sin(t * freqHz * 2 * Math.PI) * a;
+    for (const id of this.wingActIds) ctrl[id] = s;
   }
 
   /** Repopulate the visual scene from current MjData. Caller iterates scene.geoms. */
