@@ -137,12 +137,34 @@ async function main() {
     buttons.push(btn);
   }
 
-  // --- Wire scrub + play ---
+  // --- Wire scrub + play + record ---
   const controls = document.getElementById("controls") as HTMLDivElement;
   const scrub = document.getElementById("scrub") as HTMLInputElement;
   const playBtn = document.getElementById("play") as HTMLButtonElement;
+  const recBtn = document.getElementById("rec") as HTMLButtonElement;
   const label = document.getElementById("frame-label") as HTMLSpanElement;
   let playing = false;
+  let stopRec: (() => Promise<Blob>) | null = null;
+  recBtn.addEventListener("click", async () => {
+    if (!stopRec) {
+      stopRec = viewer.startRecording(30);
+      recBtn.classList.add("recording");
+      recBtn.textContent = "■ stop";
+      log("recording started", "ok");
+    } else {
+      const blob = await stopRec();
+      stopRec = null;
+      recBtn.classList.remove("recording");
+      recBtn.textContent = "● rec";
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `webgpu-fly-${Date.now()}.webm`;
+      a.click();
+      URL.revokeObjectURL(url);
+      log(`saved ${(blob.size / 1e6).toFixed(1)} MB clip`, "ok");
+    }
+  });
 
   scrub.addEventListener("input", () => {
     const idx = Number(scrub.value);
@@ -221,6 +243,52 @@ async function main() {
     buttons.forEach((b) => { b.disabled = false; });
     busy = false;
   }
+
+  // --- Click-to-stim: pulse a single neuron, watch the cascade ---
+  async function runSingleNeuronStim(idx: number) {
+    if (busy) return;
+    busy = true;
+    buttons.forEach((b) => { b.disabled = true; b.classList.remove("active"); });
+    controls.hidden = true;
+
+    const sc = SUPER_CLASS[neurons.superClass[idx]] ?? "?";
+    const hero = neurons.cellType[idx] & 0xff;
+    const heroName = ["", "KC", "MBON", "LHN", "PN", "ORN", "GF", "DN"][hero] ?? "";
+    const tag = heroName ? `${heroName} (${sc})` : sc;
+    log("");
+    log(`--- single-neuron stim: idx ${idx}  [${tag}] ---`, "ok");
+
+    const ext = new Float32Array(header.numNeurons);
+    ext[idx] = 2.0; // strong pulse on this one cell
+    sim.reset();
+    sim.setExternalInput(ext);
+    viewer.clearSnapshots();
+    viewer.highlightNeuron(idx);
+
+    const t0 = performance.now();
+    for (let s = 0; s < N_SNAPSHOTS; s++) {
+      const rate = await sim.captureRollingRate(STEPS_PER_SNAPSHOT);
+      viewer.pushSnapshot(rate);
+    }
+    const elapsed = performance.now() - t0;
+    log(`${N_SNAPSHOTS * STEPS_PER_SNAPSHOT} steps in ${elapsed.toFixed(0)} ms`, "ok");
+
+    let recruited = 0;
+    const last = viewer["snapshots"][viewer.numSnapshots - 1] as Float32Array;
+    for (let i = 0; i < last.length; i++) if (last[i] > 0) recruited++;
+    log(`final-window recruits: ${recruited.toLocaleString()} / ${header.numNeurons.toLocaleString()}`);
+
+    scrub.max = String(viewer.numSnapshots - 1);
+    scrub.value = "0";
+    label.textContent = `snap 0 / ${viewer.numSnapshots}  (t=0 ms)`;
+    controls.hidden = false;
+    playing = true;
+    viewer.setAutoplay(true);
+    playBtn.textContent = "⏸";
+    buttons.forEach((b) => { b.disabled = false; });
+    busy = false;
+  }
+  viewer.onPick((idx) => { void runSingleNeuronStim(idx); });
 
   // Auto-run the first preset (visual flash) so there's something on screen.
   runStimulus(STIMULI[0], buttons[0]);

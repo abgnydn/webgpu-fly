@@ -51,6 +51,8 @@
         padding: 6px 14px; border-radius: 4px; cursor: pointer; font: inherit;
       }
       #controls button:hover { background: #25364a; }
+      #controls button.recording { background: #4a1820; color: #ff8b8b; border-color: #803038; animation: pulse 1.4s ease-in-out infinite; }
+      @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.55 } }
       #frame-label { min-width: 140px; font-variant-numeric: tabular-nums; color: #9ad7ff; font-size: 12px; }
     </style>
   </head>
@@ -61,6 +63,7 @@
         <div>
           <h2 style="margin-bottom: 6px">Stimulus</h2>
           <div id="stim-row"></div>
+          <div style="font-size: 10px; color: #6c7480; margin-top: 6px">click any neuron to pulse it • drag still rotates</div>
         </div>
         <pre id="out"></pre>
       </aside>
@@ -70,6 +73,7 @@
           <button id="play">▶</button>
           <input id="scrub" type="range" min="0" max="0" value="0" />
           <span id="frame-label">snap 0 / 0</span>
+          <button id="rec" title="record canvas to webm">● rec</button>
         </div>
       </main>
     </div>

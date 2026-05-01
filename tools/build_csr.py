@@ -48,6 +48,7 @@ Total ≈ 64 + 32N + 4(N+1) + 8E bytes. For N=140k, E=5M ≈ 45 MB.
 from __future__ import annotations
 
 import json
+import re
 import struct
 import sys
 from pathlib import Path
@@ -95,17 +96,38 @@ HERO_CELL_TYPES = {
     "dn":     7,    # generic descending
 }
 
+# FlyWire cell_type strings use prefix codes (KC*, MBON*, ORN_*, DN*, LH[ADV]*),
+# not the long English words. Match against those, ordered most-specific first
+# so e.g. "MBON" wins over a (nonexistent) PN substring before the PN regex
+# can broaden the net. Leave hero=0 for everything that doesn't match a tag.
+_PN_RE = re.compile(r"(?:^|_)(?:ad|l|v|ml|lv|il)?PN(?:[_\W]|$)")
+_LHN_RE = re.compile(r"^LH[ADNV]")
+
+
+def classify_hero(label: str) -> int:
+    if label.startswith("KC"):
+        return HERO_CELL_TYPES["kenyon"]
+    if label.startswith("MBON"):
+        return HERO_CELL_TYPES["mbon"]
+    if label.startswith("ORN_") or label.startswith("ORN"):
+        return HERO_CELL_TYPES["orn"]
+    if label.startswith("DN"):
+        return HERO_CELL_TYPES["dn"]
+    if _LHN_RE.match(label):
+        return HERO_CELL_TYPES["lhn"]
+    if label == "GF" or label.startswith("GF_") or label.startswith("GF-"):
+        return HERO_CELL_TYPES["gf"]
+    if _PN_RE.search(label):
+        return HERO_CELL_TYPES["pn"]
+    return 0
+
 
 def pack_cell_type(label: str | float) -> int:
     if not isinstance(label, str) or not label:
         return 0
-    lo = label.lower()
-    hero = 0
-    for key, idx in HERO_CELL_TYPES.items():
-        if key in lo:
-            hero = idx
-            break
-    # FNV-1a on the label, top 24 bits
+    hero = classify_hero(label)
+    # FNV-1a on the label, top 24 bits — keeps fine-grained type identity
+    # for future hover/legend lookups; bottom 8 bits carry the hero enum.
     h = 2166136261
     for c in label.encode("utf-8"):
         h ^= c
