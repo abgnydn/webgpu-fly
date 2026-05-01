@@ -157,6 +157,54 @@ async function main() {
     if (neurons.superClass[i] === 4) centralIdxs.push(i);
   }
 
+  // Hero-group index buckets for the validation table.
+  const heroBuckets = new Map<number, number[]>();
+  for (let i = 0; i < header.numNeurons; i++) {
+    const h = neurons.cellType[i] & 0xff;
+    if (h === 0) continue;
+    if (!heroBuckets.has(h)) heroBuckets.set(h, []);
+    heroBuckets.get(h)!.push(i);
+  }
+  // Honest annotations — what the FlyWire / mushroom-body literature
+  // expects under broad sensory drive. KC sparsity is the load-bearing
+  // canonical result (Honegger 2011, Lin 2014); the rest are
+  // coarse-grained intuitions, not specific paper numbers.
+  const HERO_LABELS: Record<number, { name: string; expect: string }> = {
+    1: { name: "KC",   expect: "5-10% (canonical sparsity)" },
+    2: { name: "MBON", expect: "variable" },
+    3: { name: "LHN",  expect: "variable" },
+    4: { name: "PN",   expect: "50-80% under broad ORN drive" },
+    5: { name: "ORN",  expect: "depends on driven set" },
+    6: { name: "GF",   expect: "rare; escape-only" },
+    7: { name: "DN",   expect: "30-80% under sensory drive" },
+  };
+
+  /** Peak active count over a snapshot stack, restricted to a given index list. */
+  function peakActive(snapshots: Float32Array[], idxs: number[]): number {
+    let peak = 0;
+    for (const snap of snapshots) {
+      let n = 0;
+      for (const i of idxs) if (snap[i] > 0) n++;
+      if (n > peak) peak = n;
+    }
+    return peak;
+  }
+  function logHeroValidation(snapshots: Float32Array[]) {
+    log("hero peak active / total (literature expectation):");
+    for (const heroId of [1, 2, 3, 4, 5, 7] as const) {
+      const idxs = heroBuckets.get(heroId);
+      if (!idxs || idxs.length === 0) continue;
+      const peak = peakActive(snapshots, idxs);
+      const tot = idxs.length;
+      const pct = 100 * peak / tot;
+      const lbl = HERO_LABELS[heroId];
+      const cls = heroId === 1
+        ? (pct <= 12 ? "ok" : "warn")  // KC sparsity is the hard-floor check
+        : "";
+      log(`  ${lbl.name.padEnd(4)} ${peak.toString().padStart(5)} / ${tot.toString().padEnd(5)} (${pct.toFixed(1)}%)  — ${lbl.expect}`, cls);
+    }
+  }
+
   let driveFwd = 0, driveTurn = 0; // smoothed
   function applyDriveFromSnapshot(rate: Float32Array) {
     let sumL = 0;
@@ -311,6 +359,8 @@ async function main() {
       const total = sizes.get(cls) ?? 1;
       log(`  ${SUPER_CLASS[cls] ?? cls}: ${n.toLocaleString()} / ${total.toLocaleString()} (${(100 * n / total).toFixed(1)}%)`);
     }
+    const snaps = [...Array(viewer.numSnapshots)].map((_, i) => viewer["snapshots"][i] as Float32Array);
+    logHeroValidation(snaps);
 
     // Wire scrub bar to new snapshot count, autoplay
     scrub.max = String(viewer.numSnapshots - 1);
@@ -361,6 +411,10 @@ async function main() {
     const last = viewer["snapshots"][viewer.numSnapshots - 1] as Float32Array;
     for (let i = 0; i < last.length; i++) if (last[i] > 0) recruited++;
     log(`final-window recruits: ${recruited.toLocaleString()} / ${header.numNeurons.toLocaleString()}`);
+    if (recruited > 100) {
+      const snaps = [...Array(viewer.numSnapshots)].map((_, j) => viewer["snapshots"][j] as Float32Array);
+      logHeroValidation(snaps);
+    }
 
     scrub.max = String(viewer.numSnapshots - 1);
     scrub.value = "0";
