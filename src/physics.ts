@@ -1,41 +1,32 @@
 // physics.ts — loads the TuragaLab flybody MJCF (fruitfly.xml + 85 OBJ
-// meshes) into MuJoCo via a VFS, steps physics each frame, and exposes
-// body poses for rendering. Scale: flybody is in cm; we scale up for
-// visibility in the arena (one fly ≈ 30 cm in the visual arena).
+// meshes) into MuJoCo. Rendering uses MuJoCo's own scene-graph baker
+// (mjv_updateScene) so per-geom local transforms compose correctly with
+// body kinematics — same pattern as Google DeepMind's official
+// three.js demo (mujoco/wasm/demo_app/app.ts).
 //
-// Phase 2 scope: load + render. Actuator-driven gait control under DN
-// drive is Phase 2.1 — flybody has 111 actuators and the gait-control
-// problem is research-grade.
+// Phase 2 scope: load + render rest pose. Stepping + actuator gait is
+// Phase 2.1.
 
 import loadMujoco from "@mujoco/mujoco";
-import type { MainModule, MjModel, MjData, MjVFS } from "@mujoco/mujoco";
-
-export interface BodyInfo {
-  id: number;
-  name: string;
-  parentId: number;
-  /** Mesh filenames attached to this body's geoms (visual). */
-  meshFiles: string[];
-}
-
-export interface FlybodyPose {
-  /** xpos: [x0,y0,z0, x1,y1,z1, ...] in MuJoCo cm. Length = 3 * nbody. */
-  xpos: Float32Array;
-  /** xquat: [w0,x0,y0,z0, w1,x1,y1,z1, ...]. Length = 4 * nbody. */
-  xquat: Float32Array;
-}
+import type {
+  MainModule, MjModel, MjData,
+  MjVFS, MjvScene, MjvOption, MjvPerturb, MjvCamera,
+} from "@mujoco/mujoco";
 
 export class Physics {
-  private mujoco!: MainModule;
-  private model!: MjModel;
-  private data!: MjData;
-  private vfs!: MjVFS;
-  private nbody = 0;
+  mujoco!: MainModule;
+  model!: MjModel;
+  data!: MjData;
+  scene!: MjvScene;
 
-  bodies: BodyInfo[] = [];
-  /** Reusable scratch buffers populated by step(). */
-  private xposScratch!: Float32Array;
-  private xquatScratch!: Float32Array;
+  private vfs!: MjVFS;
+  private opt!: MjvOption;
+  private perturb!: MjvPerturb;
+  private cam!: MjvCamera;
+  private catBitAll = 0;
+
+  /** mesh id (dataid in MjvGeom for mesh geoms) → OBJ filename. */
+  meshFileById: string[] = [];
 
   static async create(onProgress?: (msg: string) => void): Promise<Physics> {
     const p = new Physics();
@@ -45,10 +36,8 @@ export class Physics {
     onProgress?.("fetching fruitfly.xml");
     let xmlText = await (await fetch("/flybody/fruitfly.xml")).text();
 
-    // fruitfly.xml is a body-only model — no floor, no environment. Inject
-    // a plane at z=0 so the fly has somewhere to land. condim=3 +
-    // moderate friction so the legs grip; size is huge so the fly can't
-    // walk off.
+    // Inject a floor + top light into the body-only fruitfly.xml so the
+    // fly has somewhere to land and the right pane gets some sky light.
     xmlText = xmlText.replace(
       "<worldbody>",
       `<worldbody>
@@ -56,8 +45,7 @@ export class Physics {
         <light name="top" pos="0 0 5" dir="0 0 -1" diffuse="0.4 0.4 0.4"/>`,
     );
 
-    // Discover mesh files referenced by the XML so we can preload them
-    // into the VFS. Anything in `file="…"` attributes counts.
+    // Discover mesh files referenced and bin-load them into the VFS.
     const meshFiles = Array.from(
       new Set(
         Array.from(xmlText.matchAll(/file="([^"]+)"/g), (m) => m[1])
@@ -67,9 +55,6 @@ export class Physics {
     onProgress?.(`fetching ${meshFiles.length} meshes`);
 
     p.vfs = new p.mujoco.MjVFS();
-    // Parallel fetch with bounded concurrency. Lower than 8 so vite's
-    // HTTP/1.1 dev server doesn't queue. Progress is reported per
-    // completed file so the brain log shows the fetch is alive.
     const CONCURRENCY = 4;
     let inFlight = 0, idx = 0, completed = 0, totalBytes = 0;
     const t0 = performance.now();
@@ -104,44 +89,61 @@ export class Physics {
     onProgress?.("compiling MJCF (synchronous; tab may freeze ~5-15s)");
     const tCompile = performance.now();
     p.model = p.mujoco.MjModel.from_xml_string(xmlText, p.vfs);
-    onProgress?.(`MJCF compiled in ${((performance.now() - tCompile) / 1000).toFixed(1)} s`);
     p.data = new p.mujoco.MjData(p.model);
-    p.nbody = p.model.nbody;
+    onProgress?.(`MJCF compiled in ${((performance.now() - tCompile) / 1000).toFixed(1)} s`);
 
-    p.xposScratch = new Float32Array(p.nbody * 3);
-    p.xquatScratch = new Float32Array(p.nbody * 4);
-
-    // Walk the body tree to collect names + parent links + mesh
-    // attachments so the renderer can build a matching scene graph.
-    p.bodies = p.collectBodies(xmlText);
-
-    // fruitfly.xml declares nkey=1 but ships no keyframe data, so reset
-    // to defaults. Then lift the freejoint thorax above the floor we
-    // just injected, and run forward kinematics so xpos/xquat are
-    // populated even before the first physics step.
+    // Reset to defaults, lift thorax above the floor we injected, then
+    // run forward kinematics so xpos/xquat are populated for t=0.
     p.mujoco.mj_resetData(p.model, p.data);
     const qpos = p.data.qpos as Float64Array;
     if (qpos.length >= 7) {
-      qpos[0] = 0; qpos[1] = 0; qpos[2] = 0.5;   // thorax 5 mm above floor
-      qpos[3] = 1; qpos[4] = 0; qpos[5] = 0; qpos[6] = 0;  // identity quat
+      qpos[0] = 0; qpos[1] = 0; qpos[2] = 0.5;
+      qpos[3] = 1; qpos[4] = 0; qpos[5] = 0; qpos[6] = 0;
     }
     p.mujoco.mj_forward(p.model, p.data);
 
-    onProgress?.(`flybody ready (${p.nbody} bodies)`);
+    // Build mesh id → file map so the renderer can resolve mjvGeom.dataid
+    // → OBJ when it encounters mjGEOM_MESH geoms.
+    const nmesh = p.model.nmesh as number;
+    const xmlMeshFile = new Map<string, string>();
+    for (const m of xmlText.matchAll(/<mesh\s+name="([^"]+)"\s+file="([^"]+)"\s*\/?>/g)) {
+      xmlMeshFile.set(m[1], m[2]);
+    }
+    for (let i = 0; i < nmesh; i++) {
+      const name = p.mujoco.mj_id2name(
+        p.model,
+        p.mujoco.mjtObj.mjOBJ_MESH.value,
+        i,
+      );
+      p.meshFileById[i] = xmlMeshFile.get(name) ?? "";
+    }
+
+    // Set up the visual scene-baker. maxgeom should comfortably exceed
+    // the model's geom count (167 for flybody) — extra capacity covers
+    // contact-point geoms that mjv_updateScene synthesizes.
+    p.opt = new p.mujoco.MjvOption();
+    p.perturb = new p.mujoco.MjvPerturb();
+    p.cam = new p.mujoco.MjvCamera();
+    p.scene = new p.mujoco.MjvScene(p.model, 4096);
+    p.catBitAll = p.mujoco.mjtCatBit.mjCAT_ALL.value;
+
+    onProgress?.(`flybody ready (${p.model.nbody} bodies, ${nmesh} meshes)`);
     return p;
   }
 
-  /** Step physics once. Reads MuJoCo body poses into scratch buffers. */
-  step(substeps = 8): FlybodyPose {
+  /** Repopulate the visual scene from current MjData. Caller iterates scene.geoms. */
+  updateScene() {
+    this.mujoco.mjv_updateScene(
+      this.model, this.data, this.opt, this.perturb,
+      this.cam, this.catBitAll, this.scene,
+    );
+  }
+
+  /** Step the simulation N times. Phase 2.1 will wire actuator drive. */
+  step(substeps = 1) {
     for (let s = 0; s < substeps; s++) {
       this.mujoco.mj_step(this.model, this.data);
     }
-    // xpos/xquat are live Float64 views — copy to Float32 once per frame.
-    const xpos = this.data.xpos as Float64Array;
-    const xquat = this.data.xquat as Float64Array;
-    for (let i = 0; i < this.nbody * 3; i++) this.xposScratch[i] = xpos[i];
-    for (let i = 0; i < this.nbody * 4; i++) this.xquatScratch[i] = xquat[i];
-    return { xpos: this.xposScratch, xquat: this.xquatScratch };
   }
 
   reset() {
@@ -155,71 +157,14 @@ export class Physics {
   }
 
   dispose() {
+    this.scene.delete();
+    this.cam.delete();
+    this.perturb.delete();
+    this.opt.delete();
     this.data.delete();
     this.model.delete();
     this.vfs.delete();
   }
 
-  /** Parse the XML to extract body names + their visual mesh attachments. */
-  private collectBodies(xmlText: string): BodyInfo[] {
-    // Simple stack-based parse — just enough to associate <geom mesh="…"/>
-    // entries with their enclosing <body name="…">. Brittle if the XML
-    // ever stops being well-formed but works for fruitfly.xml.
-    const bodies: BodyInfo[] = [];
-    // worldbody is body 0 in MuJoCo.
-    const worldbodyMatch = xmlText.match(/<worldbody>/);
-    if (!worldbodyMatch) return bodies;
-
-    // Use the model's mj_id2name to canonicalise names from MuJoCo.
-    for (let id = 0; id < this.nbody; id++) {
-      const name = this.mujoco.mj_id2name(
-        this.model,
-        this.mujoco.mjtObj.mjOBJ_BODY.value,
-        id,
-      ) ?? `body_${id}`;
-      // body_parentid is a flat int array on the model
-      const parentArr = this.model.body_parentid as Int32Array;
-      const parentId = parentArr[id];
-      bodies.push({ id, name, parentId, meshFiles: [] });
-    }
-
-    // Now scan the XML for <body name="X"><geom … mesh="Y"/></body> nesting.
-    // For each body name, collect the mesh names referenced. Then look up
-    // the mesh→file map from <mesh name="Y" file="Z.obj"/> declarations.
-    const meshFile = new Map<string, string>();
-    for (const m of xmlText.matchAll(/<mesh\s+name="([^"]+)"\s+file="([^"]+)"\s*\/?>/g)) {
-      meshFile.set(m[1], m[2]);
-    }
-
-    // Per-body mesh attachments via simple body-stack walk.
-    const bodyByName = new Map(bodies.map((b) => [b.name, b]));
-    const stack: string[] = [];
-    const tagRE = /<(\/?)(body|geom)\b([^>]*)>/g;
-    let mt: RegExpExecArray | null;
-    while ((mt = tagRE.exec(xmlText))) {
-      const closing = mt[1] === "/";
-      const tag = mt[2];
-      const attrs = mt[3];
-      if (tag === "body") {
-        if (closing) {
-          stack.pop();
-        } else {
-          const nm = /name="([^"]+)"/.exec(attrs)?.[1];
-          stack.push(nm ?? "");
-        }
-      } else if (tag === "geom" && stack.length > 0) {
-        const meshName = /mesh="([^"]+)"/.exec(attrs)?.[1];
-        if (meshName) {
-          const file = meshFile.get(meshName);
-          const bodyName = stack[stack.length - 1];
-          const body = bodyByName.get(bodyName);
-          if (file && body) body.meshFiles.push(file);
-        }
-      }
-    }
-    return bodies;
-  }
-
-  /** Number of bodies (incl. worldbody at id=0). */
-  get bodyCount() { return this.nbody; }
+  get bodyCount() { return this.model.nbody as number; }
 }
