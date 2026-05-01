@@ -16,15 +16,17 @@ export interface SimParams {
   wSyn: number;          // mV per synapse — Shiu et al 2024 free parameter (0.275 mV)
 }
 
-// Calibrated to Shiu et al. 2024 — "A Drosophila computational brain
-// model reveals sensorimotor processing", Nature 632:210–217.
-// github.com/philshiu/Drosophila_brain_model/model.py
-//   v_0 / v_rst = -52 mV  (Kakaria & de Bivort 2017)
-//   v_th        = -45 mV
-//   t_mbr       = 20 ms
-//   t_rfc       = 2.2 ms (Lazar et al)
-//   w_syn       = 0.275 mV / synapse (free parameter)
-// Their reset potential equals rest, NOT a deeper hyperpolarisation.
+// LIF state constants are from Shiu et al. 2024 (Nature 632:210–217;
+// github.com/philshiu/Drosophila_brain_model/model.py):
+//   v_0 / v_rst = -52 mV   v_th = -45 mV   t_mbr = 20 ms   t_rfc = 2.2 ms
+// w_syn and ext_gain are scaled DOWN relative to Shiu's 0.275 mV figure:
+// his model uses an alpha synapse (g grows from spike, decays with
+// tau_syn=5ms) that spreads each spike's effect over ~5 ms. Our kernel
+// does direct injection in a single 1-ms step, so the equivalent
+// one-shot weight is roughly w_syn × tau_syn / t_mbr = 0.275 × 5/20 ≈
+// 0.069 mV per synapse to match the integrated current of one spike.
+// We round to 0.05 and raise extGain so the existing presets still fire.
+// A proper alpha synapse can replace this calibration step later.
 export const DEFAULT_PARAMS: SimParams = {
   dtMs: 1.0,
   tauMs: 20.0,
@@ -32,8 +34,8 @@ export const DEFAULT_PARAMS: SimParams = {
   vReset: -52.0,
   vRest: -52.0,
   refractoryMs: 2.2,
-  extGain: 0.4,
-  wSyn: 0.275,
+  extGain: 2.0,
+  wSyn: 0.05,
 };
 
 const PARAMS_BYTES = 36; // matches struct Params in lif.wgsl (9 × 4 bytes)
