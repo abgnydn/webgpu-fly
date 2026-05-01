@@ -30,6 +30,8 @@ export class Physics {
   meshFileById: string[] = [];
   /** Cached wing-pitch actuator ids for the simple buzz demo. */
   private wingActIds: number[] = [];
+  /** Cached claw-adhesion actuator ids; set to 1.0 to keep feet on the floor. */
+  private clawAdhesionIds: number[] = [];
 
   static async create(onProgress?: (msg: string) => void): Promise<Physics> {
     const p = new Physics();
@@ -160,20 +162,43 @@ export class Physics {
       );
       if (id >= 0) p.wingActIds.push(id);
     }
+    // Claw-adhesion actuators per leg (T1/T2/T3 × left/right). Driving
+    // these at ctrl=1 keeps the feet stuck to the floor, which is what
+    // a real fly does standing still — without them, even a small wing
+    // flap reactive force launches the freejoint thorax.
+    for (const name of [
+      "adhere_claw_T1_left", "adhere_claw_T1_right",
+      "adhere_claw_T2_left", "adhere_claw_T2_right",
+      "adhere_claw_T3_left", "adhere_claw_T3_right",
+    ]) {
+      const id = p.mujoco.mj_name2id(
+        p.model, p.mujoco.mjtObj.mjOBJ_ACTUATOR.value, name,
+      );
+      if (id >= 0) p.clawAdhesionIds.push(id);
+    }
+    // Default the adhesion ctrl to fully on (the simulation step picks
+    // these up each frame).
+    const ctrl = p.data.ctrl as Float64Array;
+    for (const id of p.clawAdhesionIds) ctrl[id] = 1.0;
 
-    onProgress?.(`flybody ready (${p.model.nbody} bodies, ${nmesh} meshes, ${p.wingActIds.length} wing actuators)`);
+    onProgress?.(`flybody ready (${p.model.nbody} bodies, ${nmesh} meshes, ${p.wingActIds.length} wing acts, ${p.clawAdhesionIds.length} claws)`);
     return p;
   }
 
   /**
    * Demo drive: sinusoidal wing flap at `freqHz` with peak amplitude
    * `amp` ∈ [0, 1]. Caller picks `amp` from DN activity each frame.
+   * Also re-asserts claw adhesion at 1.0 each call so the body stays
+   * grounded against wing reactive force.
    */
   driveWings(amp: number, freqHz = 30) {
-    if (this.wingActIds.length === 0) return;
     const ctrl = this.data.ctrl as Float64Array;
+    for (const id of this.clawAdhesionIds) ctrl[id] = 1.0;
+    if (this.wingActIds.length === 0) return;
     const t = this.data.time as number;
-    const a = Math.max(0, Math.min(1, amp));
+    // Cap amplitude low — full-range wing pitch produces enough lift
+    // to launch the freejoint body. 0.15 is a gentle visible flap.
+    const a = Math.max(0, Math.min(1, amp)) * 0.15;
     const s = Math.sin(t * freqHz * 2 * Math.PI) * a;
     for (const id of this.wingActIds) ctrl[id] = s;
   }
