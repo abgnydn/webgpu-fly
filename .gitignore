@@ -19,3 +19,7 @@ public/flybody/meshes.txt
 
 # Snapshots
 snapshots/
+
+# Playwright artifacts
+/playwright-report/
+/test-results/

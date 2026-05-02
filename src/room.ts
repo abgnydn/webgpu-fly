@@ -28,7 +28,12 @@ const FLOOR_TILE = 60;           // wide enough to fit fly + 3 cm-ahead target
 // fragments per frame), runs on the same GL context as the main view.
 const RETINA_W = 64;
 const RETINA_H = 16;
-const RETINA_FOV_DEG = 180;
+// 150° hFov is the widest a flat-projection perspective camera can do
+// without the projection matrix blowing up. Real flies have ~270°
+// panoramic vision, but for a forward-only retina 150° is plenty —
+// covers ±75° around the heading vector, more than the fly normally
+// uses for visual servo.
+const RETINA_FOV_DEG = 150;
 export const RETINA_FOV_RAD = (RETINA_FOV_DEG * Math.PI) / 180;
 
 /** target.set( x, z, -y ) — converts MJ z-up to TJ y-up. */

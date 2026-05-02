@@ -1,0 +1,158 @@
+// smoke.spec.ts — end-to-end behavioral check that exercises every
+// interactive control and asserts the key signal each one is supposed
+// to produce. Runs in headed Chromium with WebGPU enabled (see
+// playwright.config.ts) so it actually drives the LIF kernel and the
+// flybody dynamics.
+//
+// Stops the user from being the QA loop: one `npm run test:e2e`
+// reports PASS/FAIL for every behavior in the demo.
+
+import { test, expect, Page } from "@playwright/test";
+
+const READY_MSG = "FlySim ready";
+
+/** Read the full text content of the log pane. */
+async function logText(page: Page): Promise<string> {
+  return await page.locator("#out").innerText();
+}
+
+/** Wait until a substring appears in the log (or timeout). */
+async function waitForLog(page: Page, needle: string, timeout = 60_000): Promise<void> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeout) {
+    const txt = await logText(page);
+    if (txt.includes(needle)) return;
+    await page.waitForTimeout(250);
+  }
+  throw new Error(`timed out waiting for "${needle}" in log`);
+}
+
+/** Click a button by its visible label text (the `<span class="label">`). */
+async function clickButton(page: Page, label: string): Promise<void> {
+  await page
+    .locator(`.stim-btn:has(.label:has-text("${label}"))`)
+    .first()
+    .click();
+}
+
+/** Wait for a button to become enabled again after a stim run. */
+async function waitButtonIdle(page: Page, label: string): Promise<void> {
+  await page
+    .locator(`.stim-btn:has(.label:has-text("${label}"))`)
+    .first()
+    .waitFor({ state: "attached" });
+  await page.waitForFunction(
+    (lbl: string) => {
+      const btn = Array.from(document.querySelectorAll<HTMLButtonElement>(".stim-btn"))
+        .find((b) => b.querySelector(".label")?.textContent?.includes(lbl));
+      return btn && !btn.disabled;
+    },
+    label,
+    { timeout: 90_000 },
+  );
+}
+
+/** Pull a number out of the log matching a regex with a single capture.
+ *  Strips thousands-commas before parseFloat. */
+function extractNumber(log: string, re: RegExp): number | null {
+  const m = log.match(re);
+  if (!m) return null;
+  return parseFloat(m[1].replace(/,/g, ""));
+}
+
+test.describe("webgpu-fly e2e", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await waitForLog(page, READY_MSG, 90_000);
+  });
+
+  test("brain fires on Mixed sensory: KC sparsity in 5–25%", async ({ page }) => {
+    await clickButton(page, "Mixed sensory");
+    await waitButtonIdle(page, "Mixed sensory");
+    const log = await logText(page);
+    // Find the KC line in the most recent block.
+    const kcMatch = log.match(/KC\s+\d+\s*\/\s*\d+\s*\(([\d.]+)%\)/g);
+    expect(kcMatch, "KC line missing from log").not.toBeNull();
+    const last = kcMatch![kcMatch!.length - 1];
+    const pct = parseFloat(last.match(/\(([\d.]+)%\)/)![1]);
+    expect(pct, `KC% out of band: ${pct}`).toBeGreaterThan(5);
+    expect(pct).toBeLessThan(30);
+  });
+
+  test("Vm climbs above rest after a stim", async ({ page }) => {
+    await clickButton(page, "Visual flash");
+    await waitButtonIdle(page, "Visual flash");
+    const log = await logText(page);
+    const aboveRest = extractNumber(log, /above-rest=([\d,]+)/);
+    expect(aboveRest, "vm diagnostic line missing").not.toBeNull();
+    // At least 1k neurons should be above rest after a strong visual flash.
+    const n = parseInt(String(aboveRest).replace(/,/g, ""), 10);
+    expect(n, `too few neurons above rest: ${n}`).toBeGreaterThan(1000);
+  });
+
+  test("DNa01 stim produces nonzero brain-driven motor", async ({ page }) => {
+    await clickButton(page, "DNa01");
+    await waitButtonIdle(page, "DNa01");
+    const log = await logText(page);
+    const fwd = extractNumber(log, /brain-driven motor: fwd=(-?[\d.]+)/);
+    expect(fwd, "DNa01 motor command missing").not.toBeNull();
+    expect(Math.abs(fwd!), `DNa01 fwd is zero: ${fwd}`).toBeGreaterThan(0.01);
+  });
+
+  test("DNb01 moonwalker drives backward (fwd < 0)", async ({ page }) => {
+    await clickButton(page, "DNb01");
+    await waitButtonIdle(page, "DNb01");
+    const log = await logText(page);
+    const fwd = extractNumber(log, /DNb01[\s\S]+?brain-driven motor: fwd=(-?[\d.]+)/);
+    expect(fwd, "DNb01 motor command missing").not.toBeNull();
+    expect(fwd!, `DNb01 fwd should be negative, got ${fwd}`).toBeLessThan(0);
+  });
+
+  test("retina detects red target during closed loop", async ({ page }) => {
+    // Wait for flybody to attach so the room has the body in scene.
+    await waitForLog(page, "flybody attached", 120_000);
+    await clickButton(page, "Track target");
+    // Run the loop briefly then stop.
+    await page.waitForTimeout(8_000);
+    await clickButton(page, "Track target");
+    const log = await logText(page);
+    const tickLines = log.match(/tick \d+: angle=(-?[\d.NaN]+)°/g);
+    expect(tickLines, "no closed-loop tick lines in log").not.toBeNull();
+    // At least one tick must have a finite angle — the retina has to
+    // see the target eventually (it spawns 3 cm dead ahead).
+    const finiteTicks = tickLines!.filter((l) => !l.includes("NaN"));
+    expect(finiteTicks.length, `retina never detected target: ${tickLines!.length} ticks all NaN`)
+      .toBeGreaterThan(0);
+  });
+
+  test("evolve-gait converges and applies", async ({ page }) => {
+    // Wait for flybody so the winner can be applied to the live body —
+    // otherwise the click handler hits the "flybody not loaded yet" path.
+    await waitForLog(page, "flybody attached", 120_000);
+    await clickButton(page, "Evolve gait");
+    await waitButtonIdle(page, "Evolve gait");
+    const log = await logText(page);
+    const evolved = log.match(/evolved in [\d.]+ s/);
+    expect(evolved, "evolution didn't finish").not.toBeNull();
+    // Best fitness should make it past 3 — see evolve.wgsl reward shape.
+    const lastBest = log.match(/gen \d+\s+best=([\d.]+)/g)!.pop()!;
+    const bestN = parseFloat(lastBest.match(/best=([\d.]+)/)![1]);
+    expect(bestN).toBeGreaterThan(3);
+    expect(log).toContain("applied evolved gait to live body");
+  });
+
+  test("body moves after DN-driven walking command", async ({ page }) => {
+    await waitForLog(page, "flybody attached", 120_000);
+    // Click a forward DN; let the brain run, the motor drive set,
+    // and the body integrate for a few seconds.
+    await clickButton(page, "DNa02");
+    await waitButtonIdle(page, "DNa02");
+    await page.waitForTimeout(5_000);
+    const drive = await page.locator("#drive-readout").innerText();
+    // drive-readout has "speed X.YZ cm/s" appended each frame.
+    const m = drive.match(/speed (-?[\d.]+) cm\/s/);
+    expect(m, `drive readout missing speed: "${drive}"`).not.toBeNull();
+    const speed = parseFloat(m![1]);
+    expect(speed, `body didn't move under DNa02 (speed=${speed} cm/s)`).toBeGreaterThan(0.1);
+  });
+});
