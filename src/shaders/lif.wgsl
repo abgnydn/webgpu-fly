@@ -15,16 +15,18 @@
 // reads stable last-step state.
 
 struct Params {
-  num_neurons      : u32,
-  alpha            : f32,   // exp(-dt / tau_m)
-  v_thresh         : f32,
-  v_reset          : f32,
-  v_rest           : f32,
-  refractory_steps : u32,
-  ext_gain         : f32,
-  step             : u32,
-  w_syn            : f32,   // Shiu 2024: 0.275 mV per synapse count
-  a_syn            : f32,   // exp(-dt / tau_syn), tau_syn ≈ 5 ms
+  num_neurons      : u32,   // offset 0
+  alpha            : f32,   // 4   exp(-dt / tau_m)
+  v_thresh         : f32,   // 8
+  v_reset          : f32,   // 12
+  v_rest           : f32,   // 16
+  refractory_steps : u32,   // 20
+  ext_gain         : f32,   // 24
+  step             : u32,   // 28
+  w_syn            : f32,   // 32  Shiu 2024 free param
+  a_syn            : f32,   // 36  exp(-dt / tau_syn), tau_syn ≈ 5 ms
+  pad0             : f32,   // 40  pads struct to 48 B for uniform 16-byte stride
+  pad1             : f32,   // 44
 };
 
 @group(0) @binding(0) var<uniform>             params      : Params;

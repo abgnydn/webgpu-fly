@@ -17,13 +17,16 @@ export interface SimParams {
   wSyn: number;          // mV per synapse — Shiu et al 2024 free parameter (0.275 mV)
 }
 
-// LIF + alpha-synapse params, literal Shiu et al. 2024 (Nature 632:210–217;
-// github.com/philshiu/Drosophila_brain_model/model.py):
+// LIF + alpha-synapse params. Backbone is Shiu et al. 2024 (Nature
+// 632:210–217; github.com/philshiu/Drosophila_brain_model/model.py):
 //   v_0 / v_rst = -52 mV   v_th = -45 mV   t_mbr = 20 ms   t_rfc = 2.2 ms
-//   tau_syn = 5 ms   w_syn = 0.275 mV per synapse count
-// The kernel implements a two-state alpha synapse so per-spike effect
-// spreads over ~5 ms instead of being injected as a single-step pulse,
-// which is what the paper's calibration assumes. No fudge factor.
+//   tau_syn = 5 ms   w_syn = 0.275 mV (literal paper value)
+// We run dt=1ms while Shiu uses 0.1ms, so the discrete alpha synapse
+// has 10× fewer integration substeps and per-spike PEAK i_syn comes
+// out ~2.25× the host-injected w_syn. To keep the cascade in the same
+// regime as the validated old direct-injection calibration (KC ≈ 12%
+// on visual flash), we scale w_syn down: old peak 0.05 mV / 2.25 ≈
+// 0.022. extGain 2.0 stays the same as the old working value.
 export const DEFAULT_PARAMS: SimParams = {
   dtMs: 1.0,
   tauMs: 20.0,
@@ -32,11 +35,11 @@ export const DEFAULT_PARAMS: SimParams = {
   vReset: -52.0,
   vRest: -52.0,
   refractoryMs: 2.2,
-  extGain: 1.0,
-  wSyn: 0.275,
+  extGain: 2.0,
+  wSyn: 0.022,
 };
 
-const PARAMS_BYTES = 48; // matches struct Params in lif.wgsl (10 × 4 bytes, padded to 16-byte stride)
+const PARAMS_BYTES = 48; // matches struct Params in lif.wgsl (12 × 4 bytes, 2 explicit pad fields)
 
 export class FlySim {
   readonly device: GPUDevice;

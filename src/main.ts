@@ -439,6 +439,21 @@ async function main() {
     const elapsed = performance.now() - t0;
     const totalSteps = N_SNAPSHOTS * STEPS_PER_SNAPSHOT;
     log(`${totalSteps} steps in ${elapsed.toFixed(0)} ms wall (${(elapsed / totalSteps).toFixed(2)} ms/step)`, "ok");
+
+    // Diagnostic: read back Vm and report distribution. If kernel ran
+    // and synaptic drive is reaching neurons, max(Vm) should approach
+    // v_thresh = -45 mV. If Vm sits at -52 (=v_rest) for everyone, the
+    // kernel didn't move — that's a structural bug, not calibration.
+    const vm = await sim.readVm();
+    let vmMin = Infinity, vmMax = -Infinity, vmSum = 0;
+    let aboveRest = 0;
+    for (let i = 0; i < vm.length; i++) {
+      if (vm[i] < vmMin) vmMin = vm[i];
+      if (vm[i] > vmMax) vmMax = vm[i];
+      vmSum += vm[i];
+      if (vm[i] > sim.params.vRest + 0.001) aboveRest++;
+    }
+    log(`vm: min=${vmMin.toFixed(2)} max=${vmMax.toFixed(2)} mean=${(vmSum / vm.length).toFixed(2)} above-rest=${aboveRest.toLocaleString()}`);
     // Drive persists at the stim's end-of-window value so the user
     // can watch the body keep walking after the brain sim completes.
     // Click another stim (or Spontaneous) to change it.
@@ -501,6 +516,14 @@ async function main() {
     }
     const elapsed = performance.now() - t0;
     log(`${N_SNAPSHOTS * STEPS_PER_SNAPSHOT} steps in ${elapsed.toFixed(0)} ms`, "ok");
+
+    {
+      const vm = await sim.readVm();
+      let vmMax = -Infinity;
+      for (let i = 0; i < vm.length; i++) if (vm[i] > vmMax) vmMax = vm[i];
+      const vmAtIdx = idxs.length ? vm[idxs[0]] : NaN;
+      log(`vm: max=${vmMax.toFixed(2)} mV  driven[0]=${vmAtIdx.toFixed(2)} mV`);
+    }
 
     let recruited = 0;
     const last = viewer["snapshots"][viewer.numSnapshots - 1] as Float32Array;
