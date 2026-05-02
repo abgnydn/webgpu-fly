@@ -3,8 +3,10 @@
 import { loadBrain, type Brain } from "./brain";
 import { FlySim, DEFAULT_PARAMS } from "./sim";
 import { FlyViewer } from "./viewer";
-import { Room } from "./room";
+import { Room, RETINA_FOV_RAD } from "./room";
 import { Physics } from "./physics";
+import { motorFromBrain, type MotorContext } from "./vnc";
+import { GaitEvolver } from "./evolution";
 
 const SUPER_CLASS = [
   "unknown", "sensory", "ascending", "intrinsic", "central",
@@ -141,8 +143,10 @@ async function main() {
   // Load real flybody MJCF in the background — fetches fruitfly.xml +
   // 85 OBJ meshes, compiles via VFS, then asks the room to build its
   // body graph. Don't block the brain init on it.
+  let physics: Physics | null = null;
   Physics.create((msg) => log(`flybody: ${msg}`))
     .then(async (p) => {
+      physics = p;
       await room.attachPhysics(p);
       log(`flybody attached (${p.bodyCount} bodies)`, "ok");
     })
@@ -234,37 +238,21 @@ async function main() {
   }
 
   let driveFwd = 0, driveTurn = 0; // smoothed
-  function applyDriveFromSnapshot(rate: Float32Array) {
-    let sumL = 0;
-    for (const i of dnLeft) sumL += rate[i];
-    let sumR = 0;
-    for (const i of dnRight) sumR += rate[i];
+  // Build VNC stand-in context once; reused by every drive update.
+  const vncCtx: MotorContext = {
+    famousDns,
+    dnLeft,
+    dnRight,
+  };
+  function applyDriveFromSnapshot(rate: Float32Array, visual?: { angle: number; area: number }) {
     let sumC = 0;
     for (const i of centralIdxs) sumC += rate[i];
-    const meanL = dnLeft.length ? sumL / dnLeft.length : 0;
-    const meanR = dnRight.length ? sumR / dnRight.length : 0;
     const meanC = centralIdxs.length ? sumC / centralIdxs.length : 0;
     room.setEyeGlow(Math.min(1, meanC * 25));
 
-    // Rates are in [0, 1] per step (1 = spike every step). Boost to a
-    // visible commanded velocity, clamp to ±1.
-    // Forward gets the boost; turn requires both (a) genuine activity
-    // (not 1-DN-fires-on-one-side noise) and (b) a real L/R imbalance.
-    // Below 1% mean activity total, the asymmetry signal is unreliable
-    // — clamp to zero so the fly walks straight. Above that, normalise
-    // by total and apply an 8% deadband.
-    const gain = 30.0;
-    const total = meanL + meanR;
-    const targetFwd = Math.max(-1, Math.min(1, gain * total * 0.5));
-    let targetTurn = 0;
-    if (total > 0.01) {
-      const asym = (meanR - meanL) / (total + 1e-6);
-      // 20% deadband — the dataset's L/R asymmetry (601 vs 716 DNs,
-      // unequal connectivity) produces a persistent ~10-15% bias on
-      // symmetric stims that we don't want to interpret as "turn."
-      const asymTrim = Math.abs(asym) < 0.20 ? 0 : asym - Math.sign(asym) * 0.20;
-      targetTurn = Math.max(-1, Math.min(1, asymTrim * 0.8));
-    }
+    const cmd = motorFromBrain(rate, { ...vncCtx, visual });
+    const targetFwd = Math.max(-1, Math.min(1, cmd.fwd));
+    const targetTurn = Math.max(-1, Math.min(1, cmd.turn));
 
     // Smoothing — exponential blend so gait feels less jittery.
     const alpha = 0.35;
@@ -272,7 +260,9 @@ async function main() {
     driveTurn = driveTurn + alpha * (targetTurn - driveTurn);
 
     room.setDrive(driveFwd, driveTurn);
-    driveReadout.textContent = `fwd ${driveFwd.toFixed(2)}  turn ${driveTurn.toFixed(2)}  L=${meanL.toFixed(3)} R=${meanR.toFixed(3)}`;
+    if (cmd.jump > 0.5) room.jumpImpulse(cmd.jump);
+
+    driveReadout.textContent = `fwd ${driveFwd.toFixed(2)}  turn ${driveTurn.toFixed(2)}  jump=${cmd.jump.toFixed(2)}`;
   }
   function decayDrive() {
     driveFwd  *= 0.85;
@@ -345,6 +335,26 @@ async function main() {
   loopSection.appendChild(loopBtn);
   stimRow.parentElement?.appendChild(loopSection);
   buttons.push(loopBtn);
+
+  // --- Evolve gait (WebGPU ARS) ---
+  // Spawns 128 candidate CPG policies on the GPU, evaluates each via
+  // a stripped hexapod fitness function, keeps the top 20%, resamples,
+  // repeats for ~60 generations. Best policy is written into the live
+  // mujoco_wasm body so the fly walks under evolved parameters. Real
+  // sim-to-real, in your tab.
+  const evoSection = document.createElement("div");
+  evoSection.style.marginTop = "10px";
+  const evoH = document.createElement("h2");
+  evoH.style.cssText = "margin: 0 0 6px 0; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: #6c7480";
+  evoH.textContent = "Evolve";
+  evoSection.appendChild(evoH);
+  const evoBtn = document.createElement("button");
+  evoBtn.className = "stim-btn";
+  evoBtn.style.flex = "1 0 100%";
+  evoBtn.innerHTML = `<span class="label">Evolve gait (WebGPU ARS)</span><span class="hint">128 policies × 60 generations</span>`;
+  evoSection.appendChild(evoBtn);
+  stimRow.parentElement?.appendChild(evoSection);
+  buttons.push(evoBtn);
 
   // --- Wire scrub + play + record ---
   const controls = document.getElementById("controls") as HTMLDivElement;
@@ -465,20 +475,6 @@ async function main() {
     busy = false;
   }
 
-  // Documented motor effect for each famous DN. We have to inject this
-  // directly because our connectome is BRAIN-only — DN axons exit the
-  // brain into the VNC, which isn't modelled, so firing DNa01 in our
-  // sim doesn't cascade to any motor neurons. The brain run still
-  // shows the DN spiking; the body responds via the documented
-  // mapping (drive set after the run completes).
-  const FAMOUS_DN_DRIVE: Record<string, { fwd: number; turn: number; jump?: number }> = {
-    DNa01: { fwd:  0.6, turn: 0   },           // forward walking
-    DNa02: { fwd:  1.0, turn: 0   },           // forward, faster
-    DNb01: { fwd: -0.6, turn: 0   },           // backward — moonwalker
-    DNp01: { fwd:  0.0, turn: 0,   jump: 30 }, // Giant Fiber escape jump
-    DNg13: { fwd:  0.3, turn: 0.8 },           // turning while walking
-  };
-
   // --- Famous-DN stim: drive both L+R copies of a named DN ---
   async function runDnStim(name: string, idxs: number[], btn: HTMLButtonElement) {
     if (busy) return;
@@ -515,22 +511,10 @@ async function main() {
       logHeroValidation(snaps);
     }
 
-    // Apply documented motor effect (VNC stand-in mapping). The brain
-    // just showed the DN firing; now we set the body drive that the
-    // real fly's VNC would produce in response. We have to inject this
-    // directly because the connectome is brain-only — DN axons exit
-    // into the VNC, which we don't model, so DNa01 firing in our sim
-    // doesn't cascade to motor neurons on its own.
-    const eff = FAMOUS_DN_DRIVE[name];
-    if (eff) {
-      driveFwd = eff.fwd;
-      driveTurn = eff.turn;
-      room.setDrive(driveFwd, driveTurn);
-      if (eff.jump) room.jumpImpulse(eff.jump);
-      driveReadout.textContent = `fwd ${driveFwd.toFixed(2)}  turn ${driveTurn.toFixed(2)}  (${name} canonical)`;
-      const jumpTag = eff.jump ? ` jump=${eff.jump}cm/s` : "";
-      log(`applied ${name} canonical motor: fwd=${eff.fwd} turn=${eff.turn}${jumpTag}`, "ok");
-    }
+    // Motor command was already produced each step by applyDriveFromSnapshot
+    // → motorFromBrain, which reads this DN's *actual* spike rate from the
+    // window and multiplies by its canonical primitive. No lookup table.
+    log(`brain-driven motor: fwd=${driveFwd.toFixed(2)} turn=${driveTurn.toFixed(2)}`, "ok");
 
     scrub.max = String(viewer.numSnapshots - 1);
     scrub.value = "0";
@@ -587,21 +571,21 @@ async function main() {
     const ext = new Float32Array(header.numNeurons);
     let tick = 0;
     while (continuousMode) {
-      // Sense: angle from fly heading to target. + = target on fly's left.
-      const angle = room.targetAngle();
+      // Sense from a real retinal render at the fly's head pose. No
+      // geometry shortcut — pixels of the scene get sampled, red blob
+      // centroid → angle. If target is behind, angle is NaN.
+      const sample = room.retinalSample();
+      const angle = sample.angle;
       const dist = room.targetDistance();
-      // FOV ~150° — real fruit flies have nearly panoramic vision.
-      // Wider than ½π lets the closed-loop start tracking even when
-      // the target is well off-axis from the fly's current heading.
-      const fov = (150 / 180) * Math.PI;
       ext.fill(0);
-      if (Number.isFinite(angle) && Math.abs(angle) < fov) {
-        const align = 1 - Math.abs(angle) / fov;     // 0..1
+      if (Number.isFinite(angle) && sample.area > 0) {
+        const align = 1 - Math.abs(angle) / RETINA_FOV_RAD;     // 0..1
         const lScale = align * (angle > 0 ? 1.0 : 0.3);
         const rScale = align * (angle < 0 ? 1.0 : 0.3);
-        // Amplitude bumped to overcome the silenced-edge floor in our
-        // optic→central path. Closer target → brighter.
-        const amp = (1.5 + 1.5 / Math.max(1, dist));
+        // Stim amplitude proportional to visual subtense (area of red
+        // blob): bigger spot = stronger optic drive. Plus a floor so
+        // even a distant blob produces some cascade.
+        const amp = 1.5 + 12 * sample.area;
         for (const i of lSubset) ext[i] = amp * lScale;
         for (const i of rSubset) ext[i] = amp * rScale;
       }
@@ -612,25 +596,9 @@ async function main() {
       // enough to let cascades propagate and DN activity settle.
       const rate = await sim.captureRollingRate(50);
       viewer.pushSnapshot(rate);
-      applyDriveFromSnapshot(rate);
-
-      // Hybrid motor: same architecture as famous-DN buttons. The
-      // brain genuinely processes optic input above (visible cascade
-      // in the left pane), but our connectome is brain-only — the
-      // optic→central→DN→motor chain doesn't reach the missing VNC.
-      // We close the loop with a canonical visual-tracking motor:
-      // when target is in FOV, walk forward and turn toward it.
-      // Sign convention: angle > 0 = target on fly's left, so to turn
-      // toward target we need turn > 0 (left legs slow → veer left).
-      if (Number.isFinite(angle) && Math.abs(angle) < fov) {
-        const align = 1 - Math.abs(angle) / fov;
-        // Forward only if reasonably aligned (within ~50°), else turn first.
-        const aimFwd = align > 0.45 ? 0.5 * align : 0;
-        const aimTurn = Math.max(-1, Math.min(1, angle / (fov * 0.8)));
-        driveFwd = aimFwd;
-        driveTurn = aimTurn;
-        room.setDrive(driveFwd, driveTurn);
-      }
+      // Brain → VNC stand-in → body. Visual cue is plumbed in so the
+      // closed loop tightens via the same path as the famous-DN buttons.
+      applyDriveFromSnapshot(rate, sample);
 
       tick++;
       if (tick % 10 === 0) {
@@ -646,6 +614,44 @@ async function main() {
     controls.hidden = false;
   }
   loopBtn.addEventListener("click", () => runContinuousLoop(loopBtn));
+
+  // Evolve-gait click: spin up GaitEvolver, run, hand winner to body.
+  let evolver: GaitEvolver | null = null;
+  evoBtn.addEventListener("click", async () => {
+    if (busy) return;
+    busy = true;
+    buttons.forEach((b) => { b.disabled = true; b.classList.remove("active"); });
+    evoBtn.classList.add("active");
+    log("");
+    log("--- evolving gait on WebGPU ---", "ok");
+    try {
+      if (!evolver) evolver = await GaitEvolver.create();
+      const t0 = performance.now();
+      const winner = await evolver.evolve({
+        population: 128,
+        generations: 60,
+        onProgress: (gen, best, mean) => {
+          if (gen % 5 === 0 || gen === 59) {
+            log(`gen ${gen.toString().padStart(2)}  best=${best.toFixed(2)}  mean=${mean.toFixed(2)}`);
+          }
+        },
+      });
+      const elapsed = performance.now() - t0;
+      log(`evolved in ${(elapsed / 1000).toFixed(1)} s`, "ok");
+      log(`winner: freq=${winner.freq.toFixed(1)}Hz coxa=${winner.coxaAmp.toFixed(2)} femur=${winner.femurAmp.toFixed(2)} tibia=${winner.tibiaAmp.toFixed(2)} swing=${winner.swingRatio.toFixed(2)} lift=${winner.liftOffset.toFixed(2)}`);
+      if (physics) {
+        physics.applyEvolvedGait(winner);
+        log("applied evolved gait to live body. press a DN button to walk.", "ok");
+      } else {
+        log("flybody not loaded yet; winner saved but not applied", "warn");
+      }
+    } catch (e) {
+      log(`evolution failed: ${(e as Error).message}`, "err");
+    }
+    evoBtn.classList.remove("active");
+    buttons.forEach((b) => { b.disabled = false; });
+    busy = false;
+  });
 
   // --- Click-to-stim: pulse a single neuron, watch the cascade ---
   async function runSingleNeuronStim(idx: number) {

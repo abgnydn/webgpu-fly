@@ -28,10 +28,6 @@ export class Physics {
 
   /** mesh id (mujoco mesh table index) → OBJ filename. */
   meshFileById: string[] = [];
-  /** Body-velocity command from the VNC layer; re-asserted every
-   *  substep inside step() so damping/gravity don't drain it. */
-  private fwdCmd = 0;
-  private turnCmd = 0;
   /** Cached wing actuator ids by axis × side (flybody convention). */
   private wingActs: { yawL: number; yawR: number; rollL: number; rollR: number; pitchL: number; pitchR: number } | null = null;
   /** Cached per-leg actuator ids for the VNC stand-in CPG. */
@@ -242,42 +238,11 @@ export class Physics {
     );
   }
 
-  /** Step physics N times. Re-asserts the kinematic body command on
-   *  every substep so MuJoCo damping doesn't drain it between writes. */
+  /** Step physics N times. No kinematic injection, no upright lock.
+   * The body is driven by leg/wing actuators only — if it falls over,
+   * it falls over. This is the honest physics path. */
   step(substeps = 1) {
-    const hasCmd = Math.abs(this.fwdCmd) > 0.01 || Math.abs(this.turnCmd) > 0.01;
     for (let s = 0; s < substeps; s++) {
-      if (hasCmd) {
-        const qpos = this.data.qpos as Float64Array;
-        const qvel = this.data.qvel as Float64Array;
-        const qw = qpos[3], qx = qpos[4], qy = qpos[5], qz = qpos[6];
-        // flybody's head sits at body-local +x — rotate body +x by
-        // the freejoint quat for the world heading.
-        const fx = 1 - 2 * (qy * qy + qz * qz);
-        const fy = 2 * (qx * qy + qw * qz);
-        const drv = Math.sqrt(Math.abs(this.fwdCmd));
-        const v = 2.0 * this.fwdCmd;
-        qvel[0] = fx * v;
-        qvel[1] = fy * v;
-        qvel[3] = 0;
-        qvel[4] = 0;
-        qvel[5] = -this.turnCmd * 3.0 * Math.max(0.5, drv);
-        // Hard upright lock: extract current yaw and rewrite the
-        // freejoint quaternion as pure yaw rotation about +z. Without
-        // this, contact-induced pitch/roll drift accumulates across
-        // substeps and the fly face-plants on the floor when walking.
-        const sinyCosp = 2 * (qw * qz + qx * qy);
-        const cosyCosp = 1 - 2 * (qy * qy + qz * qz);
-        const yaw = Math.atan2(sinyCosp, cosyCosp);
-        const halfYaw = yaw * 0.5;
-        qpos[3] = Math.cos(halfYaw);
-        qpos[4] = 0;
-        qpos[5] = 0;
-        qpos[6] = Math.sin(halfYaw);
-        // Also keep z above the floor — safety net if upward
-        // contact resolution overshoots.
-        if (qpos[2] < 0.05) qpos[2] = 0.13;
-      }
       this.mujoco.mj_step(this.model, this.data);
     }
   }
@@ -293,21 +258,37 @@ export class Physics {
    * @param turn  ∈ [-1, 1] L/R asymmetry (DN imbalance). Positive →
    *   left legs slow, right legs fast → fly veers left.
    */
+  /** Gait params (initially the hand-seeded baseline). The "Evolve gait"
+   * UI button replaces these with whatever the WebGPU ARS optimizer
+   * found in src/evolution.ts. driveLegs reads these every frame so the
+   * winner takes effect instantly. */
+  gait = {
+    freq: 10.0,
+    coxaAmp: 0.85,
+    femurAmp: 0.65,
+    tibiaAmp: 0.35,
+    swingRatio: 0.5,
+    liftOffset: 0.5,
+  };
+
   driveLegs(walk: number, turn = 0) {
     const ctrl = this.data.ctrl as Float64Array;
     const t = this.data.time as number;
-    // walk magnitude drives leg cycle visibly; sign drives the
-    // kinematic body command (so DNb01 moonwalker can scoot backward).
     const walkSigned = Math.max(-1, Math.min(1, walk));
     const w = Math.abs(walkSigned);
     const tu = Math.max(-1, Math.min(1, turn));
 
+    // Sign of walk flips the leg-sweep direction so the body moves
+    // backward for negative walk (DNb01 moonwalker) — same CPG, mirrored.
+    const dirSign = walkSigned < 0 ? -1 : 1;
     const drv = Math.sqrt(w);
-    const freq = 10.0 * drv;             // 0 → 10 Hz with √drive
+    const freq = this.gait.freq * drv;
     const phase = t * freq * 2 * Math.PI;
-    const COXA_AMP = 0.55;
-    const FEMUR_LIFT = 0.55;
-    const TIBIA_PUSH = 0.25;
+    const COXA_AMP = this.gait.coxaAmp;
+    const FEMUR_LIFT = this.gait.femurAmp;
+    const TIBIA_PUSH = this.gait.tibiaAmp;
+    const swingThresh = Math.cos(this.gait.swingRatio * Math.PI);
+    const liftPhaseShift = this.gait.liftOffset * Math.PI;
 
     for (const leg of Physics.LEG_KEYS) {
       const acts = this.legActs[leg];
@@ -316,40 +297,42 @@ export class Physics {
       const tripodA = leg === "T1_left" || leg === "T2_right" || leg === "T3_left";
       const p = tripodA ? phase : phase + Math.PI;
       const sp = Math.sin(p);
-      const swingNow = sp > 0;
+      // Stance / swing partitioned by swingRatio: swingNow when sin(p)
+      // exceeds cos(swingRatio·π), so smaller swingRatio = longer stance.
+      const swingNow = sp > swingThresh;
+      // Femur lift uses an offset-shifted phase so it leads (or lags)
+      // the coxa sweep depending on liftOffset.
+      const liftP = p + liftPhaseShift;
 
       const turnMod = isLeft ? (1 - tu * 0.5) : (1 + tu * 0.5);
-      // Mirror sign per side so left and right legs push the body in
-      // the same world direction (their joint axes point opposite).
       const sideSign = isLeft ? 1 : -1;
 
-      ctrl[acts.coxa] = sideSign * COXA_AMP * w * turnMod * sp;
+      ctrl[acts.coxa] = dirSign * sideSign * COXA_AMP * w * turnMod * sp;
 
       if (acts.femur >= 0) {
-        ctrl[acts.femur] = swingNow ? FEMUR_LIFT * w * sp : 0;
+        ctrl[acts.femur] = swingNow ? FEMUR_LIFT * w * Math.sin(liftP) : 0;
       }
-      // Tibia extends slightly in stance for push-off.
       if (acts.tibia >= 0) {
         ctrl[acts.tibia] = swingNow ? 0 : -TIBIA_PUSH * w * sp;
       }
-      // No adhesion — flybody's claw-suction was glueing the foot in
-      // place AND fighting the leg's backward sweep. Friction from
-      // body weight + tarsus contact is enough for the gait to grip.
-      if (acts.adhesion >= 0) ctrl[acts.adhesion] = 0.0;
+      // Adhesion: HIGH during stance, LOW during swing. Stand still
+      // when not commanded so the fly doesn't slide.
+      if (acts.adhesion >= 0) {
+        const stancePhase = swingNow ? 0 : 1.0;
+        ctrl[acts.adhesion] = w > 0.01 ? stancePhase : 1.0;
+      }
     }
-
-    // Stash kinematic command — physics.step's substep loop reads
-    // these and re-asserts qvel before every mj_step so damping can't
-    // drain the velocity between writes.
-    this.fwdCmd = walkSigned;
-    this.turnCmd = tu;
   }
 
-  /** Allow callers to send raw fwd/turn (for hybrid drives like the
-   *  famous-DN buttons) without going through the leg actuator path. */
-  setBodyCommand(fwd: number, turn: number) {
-    this.fwdCmd = fwd;
-    this.turnCmd = turn;
+  /** Replace the live gait params with an evolved policy from
+   * src/evolution.ts. driveLegs picks them up on the next frame. */
+  applyEvolvedGait(g: { freq: number; coxaAmp: number; femurAmp: number; tibiaAmp: number; swingRatio: number; liftOffset: number }) {
+    this.gait.freq = g.freq;
+    this.gait.coxaAmp = g.coxaAmp;
+    this.gait.femurAmp = g.femurAmp;
+    this.gait.tibiaAmp = g.tibiaAmp;
+    this.gait.swingRatio = g.swingRatio;
+    this.gait.liftOffset = g.liftOffset;
   }
 
   /** Apply an instantaneous vertical impulse to the freejoint body —

@@ -22,6 +22,15 @@ export interface RoomOpts {
 const VISUAL_SCALE = 6;          // MJ cm × 6 → TJ units; ~3 cm fly → ~18 TJ
 const FLOOR_TILE = 60;           // wide enough to fit fly + 3 cm-ahead target
 
+// Retinal sample: tiny offscreen render from the fly's head pose. Real
+// flies have ~700 ommatidia per eye over ~270° azimuth; we approximate
+// with a 64×16 panoramic strip covering 180° in front. Cheap (~1024
+// fragments per frame), runs on the same GL context as the main view.
+const RETINA_W = 64;
+const RETINA_H = 16;
+const RETINA_FOV_DEG = 180;
+export const RETINA_FOV_RAD = (RETINA_FOV_DEG * Math.PI) / 180;
+
 /** target.set( x, z, -y ) — converts MJ z-up to TJ y-up. */
 function swizzlePos(buf: Float32Array | Float64Array, idx: number, target: THREE.Vector3) {
   return target.set(
@@ -58,6 +67,15 @@ export class Room {
   private target: THREE.Mesh | null = null;
   targetPos: [number, number, number] = [3.0, 0, 0.13];
 
+  // Retinal sample state. Render target + camera positioned each frame
+  // at the fly head looking forward; readback into pixels[] gives a real
+  // visual signal that the closed loop reads instead of cheating with
+  // geometry.
+  private retinaRT: THREE.WebGLRenderTarget;
+  private retinaCam: THREE.PerspectiveCamera;
+  private retinaPixels = new Uint8Array(RETINA_W * RETINA_H * 4);
+  private retinaDirty = true;
+
   // orbit
   private isDragging = false;
   private prev = { x: 0, y: 0 };
@@ -81,6 +99,21 @@ export class Room {
     container.appendChild(this.renderer.domElement);
 
     this.camera = new THREE.PerspectiveCamera(40, w / h, 0.05, 500);
+
+    this.retinaRT = new THREE.WebGLRenderTarget(RETINA_W, RETINA_H, {
+      depthBuffer: true,
+      stencilBuffer: false,
+      magFilter: THREE.NearestFilter,
+      minFilter: THREE.NearestFilter,
+    });
+    // Three.js perspective takes vertical FOV. We want a wide horizontal
+    // strip, so derive vFov from the desired hFov and the strip aspect.
+    const hFovRad = (RETINA_FOV_DEG * Math.PI) / 180;
+    const aspect = RETINA_W / RETINA_H;
+    const vFovRad = 2 * Math.atan(Math.tan(hFovRad / 2) / aspect);
+    this.retinaCam = new THREE.PerspectiveCamera(
+      (vFovRad * 180) / Math.PI, aspect, 0.05, 50,
+    );
 
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.6));
     const key = new THREE.DirectionalLight(0xffd9a0, 1.1);
@@ -153,6 +186,109 @@ export class Room {
     const dot = hx * tx + hy * ty;
     const cross = hx * ty - hy * tx;
     return Math.atan2(cross, dot);
+  }
+
+  /**
+   * Real retinal sample: returns the horizontal angle (radians) to the
+   * brightest red blob in the fly's field of view, plus its visual area
+   * (fraction of pixels above the red threshold). Returns NaN angle if
+   * no red is visible. Positive angle = target on fly's left, matching
+   * targetAngle()'s convention.
+   *
+   * No geometry shortcut — this is the readback of a tiny scene render
+   * from the fly's head pose. If you put the target behind the fly, the
+   * angle goes NaN; if you turn the fly toward the target, the angle
+   * approaches 0.
+   */
+  retinalSample(): { angle: number; area: number } {
+    if (!this.physics) return { angle: NaN, area: 0 };
+    if (this.retinaDirty) this.refreshRetina();
+    const px = this.retinaPixels;
+    let weightSum = 0;
+    let xSum = 0;
+    let redPixels = 0;
+    const cols = RETINA_W;
+    const rows = RETINA_H;
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const o = (y * cols + x) * 4;
+        const r = px[o], g = px[o + 1], b = px[o + 2];
+        // Red-dominant pixel: r >> g, b. The target's emissive red pops
+        // way past the dim grid (max grid color ~0x2a3340 = 42, 51, 64).
+        if (r > 140 && r > g * 2 + 20 && r > b * 2 + 20) {
+          const w = r;                 // brighter pixels weighted higher
+          weightSum += w;
+          xSum += w * x;
+          redPixels++;
+        }
+      }
+    }
+    if (weightSum === 0) return { angle: NaN, area: 0 };
+    const cx = xSum / weightSum;       // pixel column of red centroid
+    // Map column [0..W-1] to angle [+hFov/2 .. -hFov/2]. Pixel x grows
+    // rightward in screen space; left side of fly view is column 0.
+    // targetAngle() convention: positive = target on left → so we
+    // negate to get "left = positive".
+    const norm = (cx + 0.5) / cols * 2 - 1;       // [-1, +1], +1 = right
+    const angle = -norm * (RETINA_FOV_DEG * Math.PI / 360);
+    return { angle, area: redPixels / (cols * rows) };
+  }
+
+  /** Render the scene from the fly's head pose into the retina RT and
+   * read pixels back. Called from the main loop once per frame, before
+   * any consumer can call retinalSample(). Cheap (~1024 fragments). */
+  private refreshRetina() {
+    if (!this.physics) return;
+    const qpos = this.physics.data.qpos as Float64Array;
+    if (!qpos || qpos.length < 7) return;
+
+    // Fly thorax position (MuJoCo cm), then forward-translate to head.
+    const fx = qpos[0], fy = qpos[1], fz = qpos[2];
+    const qw = qpos[3], qx = qpos[4], qy_ = qpos[5], qz = qpos[6];
+    // Body-forward axis (+x rotated by qpos quat). flybody head sits at
+    // body-local ~(0.057, 0, -0.003) cm; collapse to forward * 0.06.
+    const hx = 1 - 2 * (qy_ * qy_ + qz * qz);
+    const hy = 2 * (qx * qy_ + qw * qz);
+    const hz = 2 * (qx * qz - qw * qy_);
+    const headX = fx + hx * 0.06;
+    const headY = fy + hy * 0.06;
+    const headZ = fz + hz * 0.06;
+
+    // Convert head pose into TJ coords. Position uses swizzlePos
+    // semantics (x, z, -y); the look-at point is one body-forward unit
+    // ahead in MJ frame, also swizzled.
+    const lookX = headX + hx;
+    const lookY = headY + hy;
+    const lookZ = headZ + hz;
+    this.retinaCam.position.set(headX, headZ, -headY);
+    this.retinaCam.up.set(0, 1, 0);            // world up = MJ +z = TJ +y
+    this.retinaCam.lookAt(lookX, lookZ, -lookY);
+
+    // mjRoot is scaled VISUAL_SCALE; the retina cam lives in *unscaled*
+    // MJ coords because we operate on qpos directly. Render against
+    // scene-graph by attaching cam temporarily to mjRoot equivalent —
+    // simpler: render scene as-is, but apply mjRoot.scale to camera
+    // position so the scene's scaled meshes line up.
+    this.retinaCam.position.multiplyScalar(VISUAL_SCALE);
+    const lookSc = new THREE.Vector3(lookX, lookZ, -lookY).multiplyScalar(VISUAL_SCALE);
+    this.retinaCam.lookAt(lookSc);
+
+    const renderer = this.renderer;
+    const prev = renderer.getRenderTarget();
+    renderer.setRenderTarget(this.retinaRT);
+    renderer.clear();
+    renderer.render(this.scene, this.retinaCam);
+    renderer.readRenderTargetPixels(
+      this.retinaRT, 0, 0, RETINA_W, RETINA_H, this.retinaPixels,
+    );
+    renderer.setRenderTarget(prev);
+    this.retinaDirty = false;
+  }
+
+  /** Expose the raw retina pixels for visualization (e.g. mini-overlay). */
+  retinaFrame(): { pixels: Uint8Array; w: number; h: number } {
+    if (this.retinaDirty) this.refreshRetina();
+    return { pixels: this.retinaPixels, w: RETINA_W, h: RETINA_H };
   }
 
   /** Distance to target in MuJoCo cm (xy plane). */
@@ -437,6 +573,7 @@ export class Room {
         // per render — enough to see wing flap without melting CPU.
         this.physics.step(32);
         this.syncBodyTransforms();
+        this.retinaDirty = true;
       }
       this.updateCameraFromOrbit();
       this.renderer.render(this.scene, this.camera);

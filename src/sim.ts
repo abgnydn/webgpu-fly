@@ -8,6 +8,7 @@ import type { Brain } from "./brain";
 export interface SimParams {
   dtMs: number;          // timestep in milliseconds, e.g. 1.0 for 1 kHz sim
   tauMs: number;         // membrane time constant, e.g. 20 ms
+  tauSynMs: number;      // alpha-synapse time constant, e.g. 5 ms (Shiu 2024)
   vThresh: number;       // mV
   vReset: number;        // mV
   vRest: number;         // mV
@@ -16,29 +17,26 @@ export interface SimParams {
   wSyn: number;          // mV per synapse — Shiu et al 2024 free parameter (0.275 mV)
 }
 
-// LIF state constants are from Shiu et al. 2024 (Nature 632:210–217;
+// LIF + alpha-synapse params, literal Shiu et al. 2024 (Nature 632:210–217;
 // github.com/philshiu/Drosophila_brain_model/model.py):
 //   v_0 / v_rst = -52 mV   v_th = -45 mV   t_mbr = 20 ms   t_rfc = 2.2 ms
-// w_syn and ext_gain are scaled DOWN relative to Shiu's 0.275 mV figure:
-// his model uses an alpha synapse (g grows from spike, decays with
-// tau_syn=5ms) that spreads each spike's effect over ~5 ms. Our kernel
-// does direct injection in a single 1-ms step, so the equivalent
-// one-shot weight is roughly w_syn × tau_syn / t_mbr = 0.275 × 5/20 ≈
-// 0.069 mV per synapse to match the integrated current of one spike.
-// We round to 0.05 and raise extGain so the existing presets still fire.
-// A proper alpha synapse can replace this calibration step later.
+//   tau_syn = 5 ms   w_syn = 0.275 mV per synapse count
+// The kernel implements a two-state alpha synapse so per-spike effect
+// spreads over ~5 ms instead of being injected as a single-step pulse,
+// which is what the paper's calibration assumes. No fudge factor.
 export const DEFAULT_PARAMS: SimParams = {
   dtMs: 1.0,
   tauMs: 20.0,
+  tauSynMs: 5.0,
   vThresh: -45.0,
   vReset: -52.0,
   vRest: -52.0,
   refractoryMs: 2.2,
-  extGain: 2.0,
-  wSyn: 0.05,
+  extGain: 1.0,
+  wSyn: 0.275,
 };
 
-const PARAMS_BYTES = 36; // matches struct Params in lif.wgsl (9 × 4 bytes)
+const PARAMS_BYTES = 48; // matches struct Params in lif.wgsl (10 × 4 bytes, padded to 16-byte stride)
 
 export class FlySim {
   readonly device: GPUDevice;
@@ -59,6 +57,8 @@ export class FlySim {
   private vmBuf!: GPUBuffer;
   private refracBuf!: GPUBuffer;
   private extBuf!: GPUBuffer;
+  private gxBuf!: GPUBuffer;       // alpha-synapse state x (intermediate)
+  private gyBuf!: GPUBuffer;       // alpha-synapse state y (=current)
   private accumBuf!: GPUBuffer;    // per-neuron spike count over current window
 
   private bindAtoB!: GPUBindGroup; // gather reads A, writes B
@@ -149,6 +149,17 @@ export class FlySim {
       label: "ext_input",
     });
 
+    this.gxBuf = device.createBuffer({
+      size: N * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      label: "g_x",
+    });
+    this.gyBuf = device.createBuffer({
+      size: N * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      label: "g_y",
+    });
+
     this.accumBuf = device.createBuffer({
       size: N * 4,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
@@ -171,6 +182,8 @@ export class FlySim {
         { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+        { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
       ],
     });
     const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] });
@@ -199,6 +212,8 @@ export class FlySim {
           { binding: 6, resource: { buffer: this.vmBuf } },
           { binding: 7, resource: { buffer: this.refracBuf } },
           { binding: 8, resource: { buffer: this.extBuf } },
+          { binding: 9, resource: { buffer: this.gxBuf } },
+          { binding: 10, resource: { buffer: this.gyBuf } },
         ],
       });
     this.bindAtoB = mkBind(this.spikesA, this.spikesB);
@@ -240,6 +255,7 @@ export class FlySim {
 
   private writeParams() {
     const alpha = Math.exp(-this.params.dtMs / this.params.tauMs);
+    const aSyn = Math.exp(-this.params.dtMs / this.params.tauSynMs);
     const refrSteps = Math.max(0, Math.round(this.params.refractoryMs / this.params.dtMs));
     const ab = new ArrayBuffer(PARAMS_BYTES);
     const dv = new DataView(ab);
@@ -252,10 +268,11 @@ export class FlySim {
     dv.setFloat32(24, this.params.extGain, true);
     dv.setUint32(28, this.step_, true);
     dv.setFloat32(32, this.params.wSyn, true);
+    dv.setFloat32(36, aSyn, true);
     this.device.queue.writeBuffer(this.paramsBuf, 0, ab);
   }
 
-  /** Hard reset: Vm to v_rest, refrac to 0, both spike bitsets to 0. */
+  /** Hard reset: Vm to v_rest, refrac to 0, alpha-synapse state to 0, both spike bitsets to 0. */
   reset() {
     const N = this.brain.header.numNeurons;
     const words = (N + 31) >>> 5;
@@ -264,6 +281,9 @@ export class FlySim {
     this.device.queue.writeBuffer(this.vmBuf, 0, vm0);
     const zerosN = new Uint32Array(N);
     this.device.queue.writeBuffer(this.refracBuf, 0, zerosN);
+    const zerosFloatN = new Float32Array(N);
+    this.device.queue.writeBuffer(this.gxBuf, 0, zerosFloatN);
+    this.device.queue.writeBuffer(this.gyBuf, 0, zerosFloatN);
     const zerosW = new Uint32Array(words);
     this.device.queue.writeBuffer(this.spikesA, 0, zerosW);
     this.device.queue.writeBuffer(this.spikesB, 0, zerosW);
