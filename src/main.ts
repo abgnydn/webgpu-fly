@@ -5,7 +5,7 @@ import { FlySim, DEFAULT_PARAMS } from "./sim";
 import { FlyViewer } from "./viewer";
 import { Room, RETINA_FOV_RAD } from "./room";
 import { Physics } from "./physics";
-import { motorFromBrain, type MotorContext } from "./vnc";
+import { motorFromBrain, resetVnc, type MotorContext } from "./vnc";
 import { GaitEvolver } from "./evolution";
 
 const SUPER_CLASS = [
@@ -139,6 +139,31 @@ async function main() {
   const roomContainer = document.getElementById("room-container") as HTMLDivElement;
   const room = new Room({ container: roomContainer });
   const driveReadout = document.getElementById("drive-readout") as HTMLDivElement;
+
+  // Retina overlay: paint the fly's forward retinal sample into the
+  // top-right canvas each frame. Lets the user see what the closed-loop
+  // is actually sampling. The fly's retina is small (64×16) so we copy
+  // raw pixels; CSS upscales with image-rendering: pixelated for that
+  // crunchy bug-vision look.
+  const retinaCanvas = document.getElementById("retina-overlay") as HTMLCanvasElement;
+  const retinaCtx = retinaCanvas.getContext("2d")!;
+  const retinaImg = retinaCtx.createImageData(64, 16);
+  // Repaint via the room's onRetinaUpdate callback — the room renders
+  // the retina each frame in lockstep with body physics, so every paint
+  // here matches the freshest pixels the closed-loop will read.
+  room.onRetinaUpdate = () => {
+    const frame = room.retinaFrame();
+    const src = frame.pixels;
+    const dst = retinaImg.data;
+    // RGBA8 from WebGL has Y flipped relative to ImageData; mirror so
+    // the overlay reads "as the fly sees" (sky up, floor down).
+    for (let y = 0; y < frame.h; y++) {
+      const srcRow = (frame.h - 1 - y) * frame.w * 4;
+      const dstRow = y * frame.w * 4;
+      for (let i = 0; i < frame.w * 4; i++) dst[dstRow + i] = src[srcRow + i];
+    }
+    retinaCtx.putImageData(retinaImg, 0, 0);
+  };
 
   // Load real flybody MJCF in the background — fetches fruitfly.xml +
   // 85 OBJ meshes, compiles via VFS, then asks the room to build its
@@ -425,7 +450,7 @@ async function main() {
     const { ext, driven } = stim.build(brain);
     log(`driving ${driven.toLocaleString()} neurons`);
 
-    sim.reset();
+    sim.reset(); resetVnc();
     sim.setExternalInput(ext);
     viewer.clearSnapshots();
     room.resetFly();
@@ -502,7 +527,7 @@ async function main() {
     log(`--- DN stim: ${name} (${idxs.length} neurons, ${famousDnLabels[name] ?? ""}) ---`, "ok");
     const ext = new Float32Array(header.numNeurons);
     for (const idx of idxs) ext[idx] = 1.5;   // strong pulse
-    sim.reset();
+    sim.reset(); resetVnc();
     sim.setExternalInput(ext);
     viewer.clearSnapshots();
     if (idxs.length > 0) viewer.highlightNeuron(idxs[0]);
@@ -571,7 +596,7 @@ async function main() {
     controls.hidden = true;
     log("");
     log(`--- closed-loop visual: track red target ---`, "ok");
-    sim.reset();
+    sim.reset(); resetVnc();
     viewer.clearSnapshots();
     room.resetFly();
     // Reset stale drive from previous stims so the fly starts from
@@ -692,7 +717,7 @@ async function main() {
 
     const ext = new Float32Array(header.numNeurons);
     ext[idx] = 2.0; // strong pulse on this one cell
-    sim.reset();
+    sim.reset(); resetVnc();
     sim.setExternalInput(ext);
     viewer.clearSnapshots();
     viewer.highlightNeuron(idx);

@@ -79,7 +79,9 @@ export class Room {
   private retinaRT: THREE.WebGLRenderTarget;
   private retinaCam: THREE.PerspectiveCamera;
   private retinaPixels = new Uint8Array(RETINA_W * RETINA_H * 4);
-  private retinaDirty = true;
+  /** Called from the render tick after a fresh retina readback —
+   * subscribers (e.g. the overlay canvas) can read retinaPixels. */
+  onRetinaUpdate: (() => void) | null = null;
 
   // orbit
   private isDragging = false;
@@ -207,7 +209,6 @@ export class Room {
    */
   retinalSample(): { angle: number; area: number } {
     if (!this.physics) return { angle: NaN, area: 0 };
-    if (this.retinaDirty) this.refreshRetina();
     const px = this.retinaPixels;
     let weightSum = 0;
     let xSum = 0;
@@ -287,12 +288,12 @@ export class Room {
       this.retinaRT, 0, 0, RETINA_W, RETINA_H, this.retinaPixels,
     );
     renderer.setRenderTarget(prev);
-    this.retinaDirty = false;
   }
 
-  /** Expose the raw retina pixels for visualization (e.g. mini-overlay). */
+  /** Expose the raw retina pixels for visualization (e.g. mini-overlay).
+   * Pixels are refreshed from the render-loop tick — subscribe to
+   * onRetinaUpdate to be notified, or just read whenever. */
   retinaFrame(): { pixels: Uint8Array; w: number; h: number } {
-    if (this.retinaDirty) this.refreshRetina();
     return { pixels: this.retinaPixels, w: RETINA_W, h: RETINA_H };
   }
 
@@ -578,7 +579,8 @@ export class Room {
         // per render — enough to see wing flap without melting CPU.
         this.physics.step(32);
         this.syncBodyTransforms();
-        this.retinaDirty = true;
+        this.refreshRetina();
+        this.onRetinaUpdate?.();
       }
       this.updateCameraFromOrbit();
       this.renderer.render(this.scene, this.camera);

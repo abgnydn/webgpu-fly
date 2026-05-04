@@ -63,6 +63,30 @@
       #controls button.recording { background: #4a1820; color: #ff8b8b; border-color: #803038; animation: pulse 1.4s ease-in-out infinite; }
       @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.55 } }
       #frame-label { min-width: 140px; font-variant-numeric: tabular-nums; color: #9ad7ff; font-size: 12px; }
+      /* Retina overlay: 64×16 image upscaled 4× to 256×64, with a label.
+         Shows what the fly's forward-looking retina samples each frame. */
+      #retina-overlay {
+        position: absolute;
+        top: 38px;
+        right: 12px;
+        width: 256px;
+        height: 64px;
+        image-rendering: pixelated;
+        background: #000;
+        border: 1px solid #2a3a4d;
+        border-radius: 3px;
+        pointer-events: none;
+      }
+      #retina-label {
+        position: absolute;
+        top: 100px;
+        right: 12px;
+        font-size: 9px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #6c7480;
+        pointer-events: none;
+      }
     </style>
   </head>
   <body>
@@ -91,6 +115,8 @@
           <span id="pane-tag">embodiment</span>
           <div id="drive-readout">fwd 0.00  turn 0.00</div>
           <div id="room-container"></div>
+          <canvas id="retina-overlay" width="64" height="16" title="what the fly sees"></canvas>
+          <div id="retina-label">retina</div>
         </div>
       </main>
     </div>

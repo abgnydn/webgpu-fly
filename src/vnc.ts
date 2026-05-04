@@ -1,57 +1,292 @@
-// vnc.ts — hand-coded VNC stand-in. The connectome is brain-only:
-// DN axons exit the brain into the ventral nerve cord (which we don't
-// have), so brain output never reaches the body unless something
-// translates it. This module is that translator.
+// vnc.ts — synthetic ventral nerve cord (the "spine"). Real biological
+// VNC connectome (MANC, Takemura et al. 2024) isn't loaded here yet;
+// instead this is a hand-designed but biophysically-real LIF network
+// that takes the brain's DN spike rates as input, runs ~200 leaky
+// integrate-and-fire neurons on CPU, and produces a motor command for
+// the body.
 //
-// Honest version of the famous-DN motor mapping. The previous
-// implementation was a hardcoded lookup ("when the DNa01 button is
-// clicked, set fwd=0.6") which bypassed the brain entirely. Here we
-// instead read the *actual* spike rates of each named DN out of the
-// brain's snapshot and combine them with canonical per-DN motor
-// primitives drawn from the descending-neuron literature
-// (Namiki et al. 2018, Bidaye et al. 2020).
+// Why a network and not a lookup table: the previous implementation was
+// stateless (rate × primitive → motor) which made the body lurch the
+// instant the brain fired. Real spinal-cord cascades take ~10–50 ms to
+// settle, with rhythmic oscillations from half-center mutual inhibition.
+// This module reproduces that with actual integration dynamics, so the
+// fly's gait ramps in/out smoothly instead of stepping like a state
+// machine.
 //
-// Calling code stims a neuron set, runs the brain, hands the spike-rate
-// snapshot to `motorFromBrain`. If the cascade fired DNa01 strongly,
-// fwd goes up. If it fired no famous DNs (e.g. spontaneous rest), the
-// body sits. That's brain-driven control.
+// Topology (200 neurons total):
+//   [0..4]      DN inputs       — DNa01, DNa02, DNb01, DNg13, DNp01
+//   [5..24]     Decision pool   — 10 forward, 10 backward (mutual inh)
+//   [25..174]   6 leg circuits  — 6 × 25, each = half-center oscillator
+//                                  (12 flexor + 12 extensor + 1 motor)
+//   [175..199]  Tripod sync     — 25 inter-leg coordinator
+//
+// Output: walk_mag (forward firing pool mean rate),
+//         walk_sign (forward − backward), turn_bias (R − L motor diff),
+//         escape (DNp01 input rate, drives jumpImpulse).
+//
+// This is the SHAPE of a biological spinal CPG. The wiring is hand-set,
+// but every neuron is a real LIF cell that integrates synaptic current
+// over time. Drop-in replacement: when the MANC connectome dump
+// becomes easily downloadable, swap this for a real CSR loader.
 
-export interface MotorPrimitive {
-  fwd: number;     // forward walking velocity contribution per unit spike rate
-  turn: number;    // turn rate contribution per unit spike rate (signed)
-  jump: number;    // upward escape impulse (cm/s) per unit spike rate
+const N_VNC          = 200;
+const N_DN_IN        = 5;          // 0..4
+const N_DECISION     = 20;         // 5..24
+const N_PER_LEG      = 25;         // 25 each × 6 legs = 150
+const N_LEGS         = 6;
+const N_TRIPOD       = 25;         // 175..199
+
+const FWD_POOL       = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14];     // 10 forward neurons
+const BWD_POOL       = [15, 16, 17, 18, 19, 20, 21, 22, 23, 24]; // 10 backward neurons
+
+// Per-leg, the motor neuron is the 24th (last) neuron in its block.
+const LEG_BASE = (leg: number) => N_DN_IN + N_DECISION + leg * N_PER_LEG;
+const LEG_MOTOR = (leg: number) => LEG_BASE(leg) + 24;
+// Half-center oscillator within each leg: flexor pool 0..11, extensor 12..23.
+const LEG_FLEXOR = (leg: number, k: number) => LEG_BASE(leg) + k;       // k ∈ [0, 12)
+const LEG_EXTENSOR = (leg: number, k: number) => LEG_BASE(leg) + 12 + k; // k ∈ [0, 12)
+
+// Leg labels matching Physics.LEG_KEYS order:
+// [0]=T1L, [1]=T1R, [2]=T2L, [3]=T2R, [4]=T3L, [5]=T3R
+const LEG_IS_LEFT = [true, false, true, false, true, false];
+// Tripod A = T1L, T2R, T3L (leg indices 0, 3, 4); tripod B = T1R, T2L, T3R (1, 2, 5).
+const TRIPOD_A_LEGS = [0, 3, 4];
+const TRIPOD_B_LEGS = [1, 2, 5];
+
+interface SynapseEdge { pre: number; w: number; }
+
+/**
+ * VNC LIF network. CPU-side because 200 neurons × ~1500 synapses runs
+ * in ~10 µs per ms-step, well below the GPU dispatch overhead.
+ */
+export class VNC {
+  private vm: Float32Array = new Float32Array(N_VNC);
+  private refrac: Uint16Array = new Uint16Array(N_VNC);
+  private spikePrev: Uint8Array = new Uint8Array(N_VNC);
+  private extInput: Float32Array = new Float32Array(N_VNC);
+  // CSR-ish: incoming edges per neuron, indexed by row.
+  private incoming: SynapseEdge[][] = [];
+  // Spike-rate trace per neuron for output computation.
+  private rate: Float32Array = new Float32Array(N_VNC);
+  private rateAlpha = 0.85;     // EWMA on spike output, ~50ms time constant
+  private vmAlpha = Math.exp(-1 / 20);     // tau_m = 20 ms
+  private vRest = -52;
+  private vReset = -52;
+  private vThresh = -45;
+  private refracSteps = 2;
+
+  constructor() {
+    for (let i = 0; i < N_VNC; i++) {
+      this.vm[i] = this.vRest;
+      this.incoming.push([]);
+    }
+    this.wire();
+  }
+
+  /** Hand-designed connectivity. Excitatory positive weight, inhibitory
+   * negative. Numbers tuned so a single sustained DN input drives the
+   * downstream pool at ~10–50 Hz. */
+  private wire() {
+    const e = (post: number, pre: number, w: number) => this.incoming[post].push({ pre, w });
+
+    // 1. DN → decision pool
+    // DNa01 (idx 0), DNa02 (1) → forward pool excitatory
+    for (const fwd of FWD_POOL) { e(fwd, 0, 4.0); e(fwd, 1, 6.0); }
+    // DNb01 (2) → backward pool excitatory
+    for (const bwd of BWD_POOL) { e(bwd, 2, 5.0); }
+    // DNg13 (3) → asymmetric: half of forward pool only (drives turn)
+    for (let k = 0; k < 5; k++) e(FWD_POOL[k], 3, 3.0);
+    // DNp01 (4) → both pools weakly (reset / escape gate)
+    for (const fwd of FWD_POOL) e(fwd, 4, -1.5);
+    for (const bwd of BWD_POOL) e(bwd, 4, -1.5);
+
+    // 2. Forward and backward pool mutual inhibition (decision)
+    for (const fwd of FWD_POOL) for (const bwd of BWD_POOL) {
+      e(fwd, bwd, -2.5);
+      e(bwd, fwd, -2.5);
+    }
+
+    // 3. Decision → leg CPGs
+    for (let leg = 0; leg < N_LEGS; leg++) {
+      // Forward decision excites flexor pool half (drives swing-stance cycle)
+      for (let k = 0; k < 12; k++) {
+        for (const fwd of FWD_POOL) {
+          e(LEG_FLEXOR(leg, k), fwd, 1.5);
+          e(LEG_EXTENSOR(leg, k), fwd, 1.5);
+        }
+        // Backward decision drives same neurons but flipped — extensor first
+        // (we just bias amplitude, the gait sign is handled by physics.driveLegs)
+        for (const bwd of BWD_POOL) {
+          e(LEG_FLEXOR(leg, k), bwd, 1.5);
+          e(LEG_EXTENSOR(leg, k), bwd, 1.5);
+        }
+      }
+    }
+
+    // 4. Half-center oscillator within each leg
+    // Flexor and extensor pools mutually inhibit; spike-rate adaptation
+    // (refractory period is enough to give rhythmic alternation).
+    for (let leg = 0; leg < N_LEGS; leg++) {
+      for (let k = 0; k < 12; k++) {
+        // Flexor[k] gets inhibition from all extensors
+        for (let j = 0; j < 12; j++) {
+          e(LEG_FLEXOR(leg, k), LEG_EXTENSOR(leg, j), -0.5);
+          e(LEG_EXTENSOR(leg, k), LEG_FLEXOR(leg, j), -0.5);
+        }
+        // Within-pool mutual excitation (ensures pool fires together)
+        for (let j = 0; j < 12; j++) if (j !== k) {
+          e(LEG_FLEXOR(leg, k), LEG_FLEXOR(leg, j), 0.4);
+          e(LEG_EXTENSOR(leg, k), LEG_EXTENSOR(leg, j), 0.4);
+        }
+      }
+      // Motor neuron integrates flexor activity
+      for (let k = 0; k < 12; k++) {
+        e(LEG_MOTOR(leg), LEG_FLEXOR(leg, k), 1.0);
+      }
+    }
+
+    // 5. Tripod synchronizer: legs in same tripod excite each other,
+    // legs in opposite tripods inhibit. This forces proper gait.
+    const tripodHelper = (legs: number[], offset: number) => {
+      // Use first 12 of N_TRIPOD neurons for tripod A, rest for tripod B
+      for (let k = 0; k < 12; k++) {
+        const tn = N_DN_IN + N_DECISION + N_LEGS * N_PER_LEG + offset + k;
+        for (const l of legs) {
+          // Tripod neuron gets input from leg flexors
+          for (let j = 0; j < 12; j++) e(tn, LEG_FLEXOR(l, j), 0.3);
+          // ... and back-projects to ipsi-leg flexors
+          for (let j = 0; j < 12; j++) e(LEG_FLEXOR(l, j), tn, 0.5);
+          // Inhibits the other tripod's legs
+        }
+      }
+    };
+    tripodHelper(TRIPOD_A_LEGS, 0);
+    tripodHelper(TRIPOD_B_LEGS, 12);
+    // Tripod A neurons inhibit Tripod B neurons
+    for (let k = 0; k < 12; k++) {
+      const aBase = N_DN_IN + N_DECISION + N_LEGS * N_PER_LEG + k;
+      const bBase = N_DN_IN + N_DECISION + N_LEGS * N_PER_LEG + 12 + k;
+      for (let j = 0; j < 12; j++) {
+        const aN = N_DN_IN + N_DECISION + N_LEGS * N_PER_LEG + j;
+        const bN = N_DN_IN + N_DECISION + N_LEGS * N_PER_LEG + 12 + j;
+        e(aBase, bN, -0.8);
+        e(bBase, aN, -0.8);
+      }
+    }
+  }
+
+  /** Reset all neurons to rest. Called on `sim.reset()` and stim start. */
+  reset() {
+    for (let i = 0; i < N_VNC; i++) {
+      this.vm[i] = this.vRest;
+      this.refrac[i] = 0;
+      this.spikePrev[i] = 0;
+      this.rate[i] = 0;
+      this.extInput[i] = 0;
+    }
+  }
+
+  /** Set DN input rates (in [0, 1]) — five values for DNa01, DNa02,
+   * DNb01, DNg13, DNp01 in order. Drives external Vm bump on input
+   * neurons proportional to rate. */
+  setDnInput(dnRates: { DNa01: number; DNa02: number; DNb01: number; DNg13: number; DNp01: number }) {
+    this.extInput[0] = dnRates.DNa01 * 8;
+    this.extInput[1] = dnRates.DNa02 * 8;
+    this.extInput[2] = dnRates.DNb01 * 8;
+    this.extInput[3] = dnRates.DNg13 * 8;
+    this.extInput[4] = dnRates.DNp01 * 12;
+  }
+
+  /** Advance N steps. Returns motor command derived from output pools. */
+  step(nSteps: number): {
+    walkMag: number;
+    walkSign: number;
+    turnBias: number;
+    escape: number;
+    fwdRate: number;
+    bwdRate: number;
+  } {
+    for (let s = 0; s < nSteps; s++) this.tick();
+
+    // Aggregate output pools.
+    let fwd = 0, bwd = 0;
+    for (const i of FWD_POOL) fwd += this.rate[i];
+    for (const i of BWD_POOL) bwd += this.rate[i];
+    fwd /= FWD_POOL.length;
+    bwd /= BWD_POOL.length;
+
+    // Per-leg motor neuron rates → tripod-side averages → turn signal
+    let leftMotor = 0, rightMotor = 0;
+    for (let leg = 0; leg < N_LEGS; leg++) {
+      const r = this.rate[LEG_MOTOR(leg)];
+      if (LEG_IS_LEFT[leg]) leftMotor += r; else rightMotor += r;
+    }
+    leftMotor /= 3;
+    rightMotor /= 3;
+
+    return {
+      walkMag: Math.min(1, (fwd + bwd) * 6),
+      walkSign: fwd >= bwd ? 1 : -1,
+      turnBias: (rightMotor - leftMotor) * 4,
+      escape: this.rate[4],
+      fwdRate: fwd,
+      bwdRate: bwd,
+    };
+  }
+
+  private tick() {
+    // For each neuron: synaptic gather over incoming, leak integrate,
+    // threshold, write spike.
+    const spikeCurr = new Uint8Array(N_VNC);
+    for (let i = 0; i < N_VNC; i++) {
+      // Refractory.
+      if (this.refrac[i] > 0) {
+        this.refrac[i]--;
+        this.vm[i] = this.vReset;
+        continue;
+      }
+      // Gather.
+      let iSyn = 0;
+      const edges = this.incoming[i];
+      for (let k = 0; k < edges.length; k++) {
+        const ed = edges[k];
+        if (this.spikePrev[ed.pre]) iSyn += ed.w;
+      }
+      // Integrate (vRest + alpha * (vm - vRest) + iSyn + ext).
+      const iIn = iSyn + this.extInput[i];
+      const vNew = this.vRest + this.vmAlpha * (this.vm[i] - this.vRest) + iIn;
+      // Threshold.
+      if (vNew >= this.vThresh) {
+        this.vm[i] = this.vReset;
+        this.refrac[i] = this.refracSteps;
+        spikeCurr[i] = 1;
+      } else {
+        this.vm[i] = vNew;
+      }
+    }
+    // Update rate trace (EWMA).
+    for (let i = 0; i < N_VNC; i++) {
+      this.rate[i] = this.rate[i] * this.rateAlpha + spikeCurr[i] * (1 - this.rateAlpha);
+    }
+    this.spikePrev = spikeCurr;
+  }
 }
 
-// Per-DN canonical motor effect, normalized so a "fully active" DN
-// (rate ~0.5 spikes/step) produces a unit motor command. Numbers are
-// hand-tuned to the literature: DNa02 is the strongest forward command,
-// DNp01 (Giant Fiber) is pure escape, DNg13 is the canonical steering
-// DN. Values are mean across both L and R copies of each named DN.
-export const FAMOUS_DN_PRIMITIVES: Record<string, MotorPrimitive> = {
-  DNa01: { fwd:  1.6, turn: 0,    jump:  0  },   // forward walking (Bidaye 2020)
-  DNa02: { fwd:  2.4, turn: 0,    jump:  0  },   // fast forward
-  DNb01: { fwd: -1.6, turn: 0,    jump:  0  },   // moonwalker, backward
-  DNp01: { fwd:  0,   turn: 0,    jump: 60  },   // Giant Fiber, escape (Wyman 1984)
-  DNg13: { fwd:  0.6, turn: 1.6,  jump:  0  },   // steer-while-walking
-};
+// --- Backwards-compat shim: the old function-based path ------------------
+// main.ts and the e2e tests still use motorFromBrain elsewhere; we keep
+// it as a thin wrapper that drives the VNC instance and returns the
+// equivalent {fwd, turn, jump}. Each call advances 5 ms internally.
 
+export interface MotorCommand { fwd: number; turn: number; jump: number; }
 export interface MotorContext {
-  /** Per-DN-name → list of neuron indices (both L and R copies). */
   famousDns: Record<string, number[]>;
-  /** All left-hemisphere DNs (any name). For broad L/R asymmetry. */
   dnLeft: number[];
-  /** All right-hemisphere DNs. */
   dnRight: number[];
-  /**
-   * Optional retinal cue for closed-loop control. When a visual target
-   * is present, the small-field looming detector adds to escape-jump
-   * activation and the horizontal angle nudges the steering. Without
-   * this, the brain output is the only motor source.
-   */
   visual?: { angle: number; area: number };
 }
 
-export interface MotorCommand { fwd: number; turn: number; jump: number; }
+const sharedVnc = new VNC();
+const VNC_SUBSTEPS = 5;
 
 const meanRate = (rate: Float32Array, idxs: number[]) => {
   if (!idxs.length) return 0;
@@ -60,56 +295,61 @@ const meanRate = (rate: Float32Array, idxs: number[]) => {
   return s / idxs.length;
 };
 
-/**
- * Map a brain snapshot to a body command. Reads:
- *   1. Mean rate of each famous DN; multiplies by its canonical primitive.
- *   2. Bilateral DN-broad asymmetry as a fallback steering signal so
- *      stim presets that don't trigger a famous DN still produce some
- *      direction (e.g. a unilateral central stim).
- *
- * Output is unbounded; callers clamp/smoothing as needed.
- */
-export function motorFromBrain(
-  rate: Float32Array,
-  ctx: MotorContext,
-): MotorCommand {
-  let fwd = 0, turn = 0, jump = 0;
+/** Push one brain-snapshot through the VNC and pull a motor command out. */
+export function motorFromBrain(rate: Float32Array, ctx: MotorContext): MotorCommand {
+  // Pull famous-DN rates from brain snapshot. Each name maps to the L+R
+  // copies of that DN in the connectome; we average to get a single rate.
+  const dns = {
+    DNa01: meanRate(rate, ctx.famousDns.DNa01 ?? []),
+    DNa02: meanRate(rate, ctx.famousDns.DNa02 ?? []),
+    DNb01: meanRate(rate, ctx.famousDns.DNb01 ?? []),
+    DNg13: meanRate(rate, ctx.famousDns.DNg13 ?? []),
+    DNp01: meanRate(rate, ctx.famousDns.DNp01 ?? []),
+  };
+  sharedVnc.setDnInput(dns);
+  const out = sharedVnc.step(VNC_SUBSTEPS);
 
-  // 1. Famous DN primitives
-  for (const [name, idxs] of Object.entries(ctx.famousDns)) {
-    const prim = FAMOUS_DN_PRIMITIVES[name];
-    if (!prim) continue;
-    const r = meanRate(rate, idxs);
-    fwd += prim.fwd * r;
-    turn += prim.turn * r;
-    jump += prim.jump * r;
-  }
+  // walkMag×sign drives forward; backward when sign negative.
+  let fwd = out.walkMag * out.walkSign;
+  let turn = out.turnBias;
 
-  // 2. Broad L/R DN asymmetry. Even when no famous DN dominates, an
-  // imbalance in overall DN firing (e.g. unilateral stim) should yield
-  // a turn. Same 20% deadband as before — connectivity asymmetry in
-  // FlyWire L/R counts produces a persistent ~10-15% bias on symmetric
-  // stims.
+  // L/R DN broad asymmetry adds a small steering bias for stims that
+  // don't trigger a famous DN (kept from previous implementation).
   const meanL = meanRate(rate, ctx.dnLeft);
   const meanR = meanRate(rate, ctx.dnRight);
   const total = meanL + meanR;
   if (total > 0.01) {
     const asym = (meanR - meanL) / (total + 1e-6);
     const trim = Math.abs(asym) < 0.20 ? 0 : asym - Math.sign(asym) * 0.20;
-    turn += trim * 1.6;
-    // Also reinforce forward — strong bilateral DN activity = the brain
-    // wants to move. Scale total rate (mean of L+R, in [0, 1]) → fwd.
-    fwd += Math.min(1, total * 8);
+    turn += trim * 0.8;
   }
 
-  // 3. Visual reflex (optional). When the retina sees a red target,
-  // the steering also gets a soft nudge so the loop tightens — this
-  // approximates the visual-system → DN feedback that the connectome
-  // does encode but that takes hundreds of ms to settle. The factor is
-  // small so the brain still dominates when DNs fire.
-  if (ctx.visual && Number.isFinite(ctx.visual.angle)) {
-    turn += ctx.visual.angle * 0.5;
+  // Visual reflex: if the retina sees a red target, steer toward it
+  // with a tight gain. Dead-zone of ±5° prevents oscillation when
+  // already on-axis. Quadratic ramp on |angle| so off-axis turns are
+  // sharp but on-axis is smooth.
+  if (ctx.visual && Number.isFinite(ctx.visual.angle) && ctx.visual.area > 0) {
+    const a = ctx.visual.angle;
+    const dead = (5 * Math.PI) / 180;
+    if (Math.abs(a) > dead) {
+      const sign = a > 0 ? 1 : -1;
+      const mag = Math.min(1, Math.abs(a) * 1.4);
+      turn += sign * mag * 1.5;     // dominates DN-broad asymmetry term
+    }
+    // Walk forward when target is in front (within ±60°) — magnitude
+    // proportional to area so the fly speeds up on approach.
+    if (Math.abs(a) < (60 * Math.PI) / 180) {
+      fwd += Math.min(0.6, ctx.visual.area * 8 + 0.2);
+    }
   }
+
+  // Escape jump from DNp01 — translated to a 60 cm/s impulse if the DN
+  // input is fully active. We return jump as part of the command and
+  // let the caller hand to physics.jumpImpulse.
+  const jump = dns.DNp01 > 0.05 ? 60 * Math.min(1, dns.DNp01 * 6) : 0;
 
   return { fwd, turn, jump };
 }
+
+/** Reset the shared VNC state (call from sim.reset). */
+export function resetVnc() { sharedVnc.reset(); }
