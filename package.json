@@ -9,7 +9,9 @@
     "typecheck": "tsc --noEmit",
     "data": "bash tools/download_data.sh",
     "convert": ".venv/bin/python tools/build_csr.py",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "deploy": "npm run build && vercel --prod",
+    "deploy:preview": "npm run build && vercel"
   },
   "license": "MIT",
   "devDependencies": {

@@ -45,10 +45,14 @@ export class Physics {
     //   skybox, exactly what the official Python wrapper composes.
     // We load both into the VFS so MuJoCo's <include> resolves it
     // without any string surgery on our end.
+    // Allow VITE_FLYBODY_URL to point at an external host (CDN / GitHub
+    // Release) for the 134 MB of flybody assets. Defaults to the local
+    // public/flybody dir for dev.
+    const base = (import.meta.env.VITE_FLYBODY_URL || "/flybody").replace(/\/$/, "");
     onProgress?.("fetching floor.xml + fruitfly.xml");
     const [floorText, flyText] = await Promise.all([
-      fetch("/flybody/floor.xml").then((r) => r.text()),
-      fetch("/flybody/fruitfly.xml").then((r) => r.text()),
+      fetch(`${base}/floor.xml`).then((r) => r.text()),
+      fetch(`${base}/fruitfly.xml`).then((r) => r.text()),
     ]);
 
     // Mesh refs come from fruitfly.xml; floor.xml only has texture refs.
@@ -70,7 +74,7 @@ export class Physics {
         while (inFlight < CONCURRENCY && idx < meshFiles.length) {
           const file = meshFiles[idx++];
           inFlight++;
-          getOrFetch(file, `/flybody/${file}`)
+          getOrFetch(file, `${base}/${file}`)
             .then((buf) => {
               const u8 = new Uint8Array(buf);
               p.vfs.addBuffer(file, u8);

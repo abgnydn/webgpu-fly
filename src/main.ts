@@ -94,10 +94,15 @@ function classSizes(superClass: Uint32Array) {
 }
 
 async function main() {
-  log("loading brain.bin ...");
+  // Allow the deploy to point at an external host for brain.bin /
+  // brain.meta.json (Vercel Hobby's 50 MB-per-file limit blocks the
+  // 120 MB connectome). Set VITE_BRAIN_URL at build time.
+  const brainUrl = import.meta.env.VITE_BRAIN_URL || "/brain.bin";
+  const metaUrl = import.meta.env.VITE_BRAIN_META_URL || "/brain.meta.json";
+  log(`loading brain from ${brainUrl} ...`);
   let brain: Brain;
   try {
-    brain = await loadBrain("/brain.bin");
+    brain = await loadBrain(brainUrl);
   } catch (e) {
     log(`failed: ${(e as Error).message}`, "err");
     log("did you run `npm run data && npm run convert`?", "warn");
@@ -125,7 +130,7 @@ async function main() {
   let famousDns: Record<string, number[]> = {};
   let famousDnLabels: Record<string, string> = {};
   try {
-    const meta = await (await fetch("/brain.meta.json")).json();
+    const meta = await (await fetch(metaUrl)).json();
     famousDns = meta.famous_dns ?? {};
     famousDnLabels = meta.famous_dn_descriptions ?? {};
   } catch {}
