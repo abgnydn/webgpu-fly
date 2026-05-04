@@ -30,3 +30,4 @@ snapshots/
 # Playwright artifacts
 /playwright-report/
 /test-results/
+.env.production

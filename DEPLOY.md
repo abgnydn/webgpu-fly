@@ -21,31 +21,50 @@ cap, so we offload all heavy assets to **R2** and keep Pages slim.
 ```bash
 # one time
 wrangler login
+# Enable R2 in dash.cloudflare.com → R2 → Enable (requires payment
+# method on file; won't be billed unless you exceed the 10 GB free tier)
 wrangler r2 bucket create webgpu-fly-assets
-# enable public access on the bucket from the Cloudflare dashboard
-# (or set up a custom domain; r2.dev URLs are rate-limited but free)
+wrangler r2 bucket dev-url enable webgpu-fly-assets   # captures the public URL
+wrangler r2 bucket cors set webgpu-fly-assets --file r2-cors.json
+wrangler pages project create webgpu-fly --production-branch=main
 
 # every time you regenerate brain.bin / vnc.bin
-npm run deploy:r2          # uploads big assets to R2 (~300 MB)
+npm run deploy:r2          # uploads big assets to R2 (~300 MB, ~10 min)
 
 # every code push
-npm run deploy             # builds + deploys to Cloudflare Pages
+npm run deploy             # builds (with R2 URLs from .env.production)
+                           # then deploys to Cloudflare Pages
 ```
 
-After the first `deploy:r2`, set these env vars in the Cloudflare Pages
-project (Settings → Environment Variables, both Preview and Production):
+Vite reads `import.meta.env.VITE_*` at *build* time, not runtime, so the
+URLs need to be in the local environment when `npm run build:slim`
+runs. Easiest is a `.env.production` file (gitignored) containing:
 
 ```
-VITE_BRAIN_URL       = https://<r2-public-host>/brain.bin
-VITE_BRAIN_META_URL  = https://<r2-public-host>/brain.meta.json
-VITE_VNC_URL         = https://<r2-public-host>/vnc.bin
-VITE_VNC_META_URL    = https://<r2-public-host>/vnc.meta.json
-VITE_FLYBODY_URL     = https://<r2-public-host>/flybody
+VITE_BRAIN_URL=https://<r2-public-host>/brain.bin
+VITE_BRAIN_META_URL=https://<r2-public-host>/brain.meta.json
+VITE_VNC_URL=https://<r2-public-host>/vnc.bin
+VITE_VNC_META_URL=https://<r2-public-host>/vnc.meta.json
+VITE_FLYBODY_URL=https://<r2-public-host>/flybody
 ```
 
-`<r2-public-host>` is either your bucket's `r2.dev` subdomain or your
-custom domain. Find it in Cloudflare dashboard → R2 → bucket →
-Settings → Public access.
+`<r2-public-host>` is the bucket's r2.dev subdomain (printed by the
+`dev-url enable` command), or your custom domain.
+
+`r2-cors.json`:
+```json
+{
+  "rules": [{
+    "allowed": {
+      "origins": ["*"],
+      "methods": ["GET", "HEAD"],
+      "headers": ["*"]
+    },
+    "exposeHeaders": ["Content-Length", "Content-Type"],
+    "maxAgeSeconds": 86400
+  }]
+}
+```
 
 `public/_headers` already sets long immutable cache on the JS bundle
 and WASM. The R2 bucket should also serve `Cache-Control:
