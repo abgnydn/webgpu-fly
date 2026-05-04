@@ -31,3 +31,4 @@ snapshots/
 /playwright-report/
 /test-results/
 .env.production
+.claude/
