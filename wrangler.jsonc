@@ -1,0 +1,12 @@
+{
+  // Wrangler config for Cloudflare Pages deploys. The heavy assets
+  // (brain.bin, vnc.bin, flybody/*.obj) live in R2 because Pages caps
+  // individual files at 25 MB and head_red.obj alone is 31 MB. R2 is
+  // a separate "deploy" via tools/upload_to_r2.sh.
+  //
+  // Run: npm run deploy:cloudflare
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "webgpu-fly",
+  "compatibility_date": "2026-05-04",
+  "pages_build_output_dir": "dist"
+}

@@ -31,6 +31,12 @@
       .stim-btn:disabled { opacity: 0.5; cursor: wait; }
       .stim-btn .label { display: block; font-weight: 600; color: #e6e6e6; margin-bottom: 2px; }
       .stim-btn .hint { display: block; font-size: 10px; color: #6c7480; }
+      .stim-btn .ext-link {
+        position: absolute; top: 6px; right: 8px;
+        font-size: 11px; color: #6c7480; text-decoration: none;
+        padding: 2px 4px; border-radius: 2px;
+      }
+      .stim-btn .ext-link:hover { color: #9ad7ff; background: rgba(154,215,255,0.1); }
 
       #out { white-space: pre-wrap; font-size: 12px; color: #c2c5ca; flex: 1; min-height: 0; overflow-y: auto; }
       #out .ok { color: #6cd28a; }
@@ -87,9 +93,56 @@
         color: #6c7480;
         pointer-events: none;
       }
+
+      /* Boot overlay — covers the whole app while the brain blob and
+         flybody assets stream in (~30-60 s on a cold cache). Fades out
+         once both pipelines are ready. */
+      #boot {
+        position: fixed; inset: 0; z-index: 1000;
+        background: radial-gradient(circle at 50% 35%, #0d1320, #06070a 70%);
+        color: #c2c5ca; font: 13px/1.5 -apple-system, "SF Pro Text", monospace;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        gap: 20px; transition: opacity 0.6s ease;
+      }
+      #boot.hidden { opacity: 0; pointer-events: none; }
+      #boot h1 {
+        margin: 0; font-size: 28px; letter-spacing: 0.04em; color: #9ad7ff;
+        font-weight: 500;
+      }
+      #boot .sub { color: #6c7480; font-size: 12px; max-width: 420px; text-align: center; }
+      #boot .stages { display: grid; grid-template-columns: 18px 140px 1fr; gap: 8px 12px; align-items: center; min-width: 460px; }
+      #boot .stages .dot { width: 12px; height: 12px; border-radius: 50%; background: #2a3340; transition: background 0.3s; }
+      #boot .stages .dot.run { background: #f5c542; animation: pulse 1.4s ease-in-out infinite; }
+      #boot .stages .dot.ok  { background: #6cd28a; }
+      #boot .stages .label { color: #9ad7ff; font-variant-numeric: tabular-nums; }
+      #boot .stages .detail { color: #6c7480; font-variant-numeric: tabular-nums; }
+      #boot .blink { animation: pulse 1.6s ease-in-out infinite; color: #6c7480; font-size: 11px; }
+      @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.4 } }
     </style>
   </head>
   <body>
+    <div id="boot">
+      <h1>webgpu-fly</h1>
+      <div class="sub">
+        a real fly brain (FlyWire, 139k neurons) talking to a real fly spinal cord
+        (Janelia MANC, 23k neurons) talking to a real fly body
+        (TuragaLab flybody, 67 parts) — all running in your browser tab.
+      </div>
+      <div class="stages">
+        <div id="boot-brain-dot" class="dot"></div>
+        <div class="label">connectome</div>
+        <div id="boot-brain-detail" class="detail">waiting…</div>
+
+        <div id="boot-vnc-dot" class="dot"></div>
+        <div class="label">spine (VNC)</div>
+        <div id="boot-vnc-detail" class="detail">waiting…</div>
+
+        <div id="boot-body-dot" class="dot"></div>
+        <div class="label">body (flybody)</div>
+        <div id="boot-body-detail" class="detail">waiting…</div>
+      </div>
+      <div class="blink">first load downloads ~300 MB; subsequent loads are instant via IndexedDB cache</div>
+    </div>
     <div id="app">
       <aside id="side">
         <h1>webgpu-fly</h1>

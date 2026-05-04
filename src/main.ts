@@ -93,6 +93,35 @@ function classSizes(superClass: Uint32Array) {
   return m;
 }
 
+// Boot overlay handles. Updated as each pipeline stage progresses.
+function bootStage(name: "brain" | "vnc" | "body", state: "run" | "ok", detail: string) {
+  const dot = document.getElementById(`boot-${name}-dot`);
+  const det = document.getElementById(`boot-${name}-detail`);
+  if (dot) dot.className = `dot ${state}`;
+  if (det) det.textContent = detail;
+}
+function bootMaybeDismiss() {
+  const allOk = ["brain", "vnc", "body"].every((n) => {
+    const dot = document.getElementById(`boot-${n}-dot`);
+    return dot?.classList.contains("ok") || dot?.dataset.skipped === "1";
+  });
+  if (!allOk) return;
+  const boot = document.getElementById("boot");
+  if (!boot) return;
+  boot.classList.add("hidden");
+  setTimeout(() => boot.remove(), 700);
+}
+function bootSkip(name: "brain" | "vnc" | "body", detail: string) {
+  const dot = document.getElementById(`boot-${name}-dot`);
+  if (dot) {
+    dot.dataset.skipped = "1";
+    dot.style.background = "#6c7480";
+  }
+  const det = document.getElementById(`boot-${name}-detail`);
+  if (det) det.textContent = detail;
+  bootMaybeDismiss();
+}
+
 async function main() {
   // Allow the deploy to point at an external host for brain.bin /
   // brain.meta.json (Vercel Hobby's 50 MB-per-file limit blocks the
@@ -100,14 +129,17 @@ async function main() {
   const brainUrl = import.meta.env.VITE_BRAIN_URL || "/brain.bin";
   const metaUrl = import.meta.env.VITE_BRAIN_META_URL || "/brain.meta.json";
   log(`loading brain from ${brainUrl} ...`);
+  bootStage("brain", "run", "fetching connectome (120 MB)…");
   let brain: Brain;
   try {
     brain = await loadBrain(brainUrl);
   } catch (e) {
     log(`failed: ${(e as Error).message}`, "err");
     log("did you run `npm run data && npm run convert`?", "warn");
+    bootStage("brain", "run", `failed: ${(e as Error).message}`);
     return;
   }
+  bootStage("brain", "ok", `${brain.header.numNeurons.toLocaleString()} neurons, ${brain.header.numEdges.toLocaleString()} edges`);
   const { header, neurons } = brain;
   log(`magic OK, version ${header.version}`, "ok");
   log(`neurons : ${header.numNeurons.toLocaleString()}`);
@@ -174,13 +206,22 @@ async function main() {
   // 85 OBJ meshes, compiles via VFS, then asks the room to build its
   // body graph. Don't block the brain init on it.
   let physics: Physics | null = null;
-  Physics.create((msg) => log(`flybody: ${msg}`))
+  bootStage("body", "run", "fetching flybody MJCF + 85 meshes…");
+  Physics.create((msg) => {
+    log(`flybody: ${msg}`);
+    bootStage("body", "run", msg);
+  })
     .then(async (p) => {
       physics = p;
       await room.attachPhysics(p);
       log(`flybody attached (${p.bodyCount} bodies)`, "ok");
+      bootStage("body", "ok", `${p.bodyCount} bodies, 85 meshes ready`);
+      bootMaybeDismiss();
     })
-    .catch((e) => log(`flybody failed to load: ${(e as Error).message}`, "warn"));
+    .catch((e) => {
+      log(`flybody failed to load: ${(e as Error).message}`, "warn");
+      bootStage("body", "run", `failed: ${(e as Error).message}`);
+    });
 
   // Pre-bin DN indices by hemisphere using pos_x relative to brain centroid.
   // Left hemisphere = pos_x < cx (anatomical left when looking at the brain
@@ -396,6 +437,7 @@ async function main() {
   let vncMeta: { dn_inputs: Record<string, number[]>; motor: Record<string, { all: number[] }>; num_neurons: number; num_edges: number } | null = null;
   const vncUrl = import.meta.env.VITE_VNC_URL || "/vnc.bin";
   const vncMetaUrl = import.meta.env.VITE_VNC_META_URL || "/vnc.meta.json";
+  bootStage("vnc", "run", "fetching MANC connectome (43 MB)…");
   try {
     const vncBrain = await loadBrain(vncUrl);
     const vncMetaResp = await fetch(vncMetaUrl);
@@ -403,9 +445,12 @@ async function main() {
     vncSim = await FlySim.create(vncBrain, { ...DEFAULT_PARAMS });
     log(`real VNC loaded: ${vncBrain.header.numNeurons.toLocaleString()} neurons, ${vncBrain.header.numEdges.toLocaleString()} edges (Janelia MANC)`, "ok");
     log(`  ${Object.keys(vncMeta!.dn_inputs).length} DN types, ${Object.keys(vncMeta!.motor).length} leg groups`);
+    bootStage("vnc", "ok", `${vncBrain.header.numNeurons.toLocaleString()} neurons, ${Object.keys(vncMeta!.motor).length} leg groups`);
   } catch (e) {
     log(`real VNC unavailable (${(e as Error).message}); using synthetic spine`, "warn");
+    bootSkip("vnc", "synthetic 200-neuron fallback (vnc.bin missing)");
   }
+  bootMaybeDismiss();
   log("");
 
   // --- Build stimulus buttons ---
@@ -439,8 +484,19 @@ async function main() {
     for (const [name, idxs] of Object.entries(famousDns)) {
       const btn = document.createElement("button");
       btn.className = "stim-btn";
+      btn.style.position = "relative";
       const desc = famousDnLabels[name] ?? "";
-      btn.innerHTML = `<span class="label">${name}</span><span class="hint">${desc}</span>`;
+      // The ↗ link opens FlyWire Codex at this cell type, where the
+      // user can browse the actual EM-traced neuron — both hemispheres,
+      // synapse partners, neuropil maps. We use stopPropagation so the
+      // link click doesn't also run the stim.
+      btn.innerHTML = `
+        <span class="label">${name}</span>
+        <span class="hint">${desc}</span>
+        <a class="ext-link" href="https://codex.flywire.ai/app/cell_details?cell_names_or_id=${encodeURIComponent(name)}" target="_blank" rel="noopener" title="open in FlyWire Codex">↗</a>
+      `;
+      const link = btn.querySelector(".ext-link") as HTMLAnchorElement;
+      link.addEventListener("click", (e) => e.stopPropagation());
       btn.addEventListener("click", () => runDnStim(name, idxs, btn));
       dnRow.appendChild(btn);
       buttons.push(btn);

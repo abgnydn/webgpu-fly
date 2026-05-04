@@ -539,7 +539,34 @@ export class Room {
   private attachInput() {
     const el = this.renderer.domElement;
     el.style.touchAction = "none";
+    // Raycaster + floor plane for click-to-place-target. Right-click
+    // or shift+left-click drops the red ball wherever the cursor lands.
+    const raycaster = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+    const floor = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);   // world y=0
+    const hit = new THREE.Vector3();
+    const placeTargetAtScreen = (x: number, y: number) => {
+      const r = el.getBoundingClientRect();
+      ndc.set(((x - r.left) / r.width) * 2 - 1, -((y - r.top) / r.height) * 2 + 1);
+      raycaster.setFromCamera(ndc, this.camera);
+      if (!raycaster.ray.intersectPlane(floor, hit)) return;
+      // Convert TJ world (x, y, z) → MJ frame: MJ x = TJ x / scale,
+      // MJ y = -TJ z / scale, MJ z = TJ y / scale (y stays small, fly height).
+      const mjX = hit.x / VISUAL_SCALE;
+      const mjY = -hit.z / VISUAL_SCALE;
+      this.targetPos = [mjX, mjY, this.targetPos[2]];
+      if (this.target) this.target.position.set(mjX, this.targetPos[2], -mjY);
+      if (this.targetGlow) this.targetGlow.position.copy(this.target!.position);
+    };
+    el.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      placeTargetAtScreen(e.clientX, e.clientY);
+    });
     el.addEventListener("pointerdown", (e) => {
+      if (e.shiftKey || e.button === 2) {
+        placeTargetAtScreen(e.clientX, e.clientY);
+        return;
+      }
       this.isDragging = true;
       this.prev = { x: e.clientX, y: e.clientY };
       el.setPointerCapture(e.pointerId);

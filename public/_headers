@@ -1,0 +1,10 @@
+# Cloudflare Pages cache headers. The JS bundle and WASM never change
+# without a new build (Vite hashes filenames), so we mark them
+# immutable. The heavy LIF data lives on R2 with its own headers.
+
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/assets/*.wasm
+  Cache-Control: public, max-age=31536000, immutable
+  Content-Type: application/wasm

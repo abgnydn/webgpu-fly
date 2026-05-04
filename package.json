@@ -10,8 +10,9 @@
     "data": "bash tools/download_data.sh",
     "convert": ".venv/bin/python tools/build_csr.py",
     "test:e2e": "playwright test",
-    "deploy": "npm run build && vercel --prod",
-    "deploy:preview": "npm run build && vercel"
+    "deploy": "npm run build && wrangler pages deploy dist --project-name=webgpu-fly",
+    "deploy:vercel": "npm run build && vercel --prod",
+    "deploy:r2": "bash tools/upload_to_r2.sh"
   },
   "license": "MIT",
   "devDependencies": {

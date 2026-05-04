@@ -1,79 +1,79 @@
 # Deploying webgpu-fly publicly
 
-The build outputs to `dist/`. Three categories of assets:
+Asset budget:
 
-| Asset | Size | Notes |
+| Asset | Size | Where it goes |
 |---|---|---|
-| JS bundle + index.html | ~700 KB | tiny |
-| mujoco WASM | ~8.6 MB | fits anywhere |
-| `public/flybody/*.obj` (85 files) | 134 MB | largest single ~10 MB |
-| `public/brain.bin` | 120 MB | one big blob |
+| `index.html` + `assets/index-*.js` | ~700 KB | Pages |
+| `assets/mujoco-*.wasm` | 8.6 MB | Pages |
+| `public/flybody/*.obj` (85 files) | 134 MB total, biggest 31 MB | R2 |
+| `public/flybody/*.xml` (2 files) | <1 MB | R2 |
+| `public/brain.bin` | 120 MB | R2 |
+| `public/brain.meta.json` | 1 KB | R2 |
+| `public/vnc.bin` | 43 MB | R2 |
+| `public/vnc.meta.json` | 34 KB | R2 |
 
-## Path 1 — Vercel Pro (simplest)
+`head_red.obj` alone is 31 MB, over Cloudflare Pages's 25 MB per-file
+cap, so we offload all heavy assets to **R2** and keep Pages slim.
+
+## Path 1 — Cloudflare (recommended)
 
 ```bash
-vercel login
-npm run deploy
+# one time
+wrangler login
+wrangler r2 bucket create webgpu-fly-assets
+# enable public access on the bucket from the Cloudflare dashboard
+# (or set up a custom domain; r2.dev URLs are rate-limited but free)
+
+# every time you regenerate brain.bin / vnc.bin
+npm run deploy:r2          # uploads big assets to R2 (~300 MB)
+
+# every code push
+npm run deploy             # builds + deploys to Cloudflare Pages
 ```
 
-Pro plan tolerates the 120 MB `brain.bin` directly. `vercel.json` already
-sets immutable cache headers on the heavy assets.
+After the first `deploy:r2`, set these env vars in the Cloudflare Pages
+project (Settings → Environment Variables, both Preview and Production):
 
-## Path 2 — Vercel Hobby + external assets (free)
+```
+VITE_BRAIN_URL       = https://<r2-public-host>/brain.bin
+VITE_BRAIN_META_URL  = https://<r2-public-host>/brain.meta.json
+VITE_VNC_URL         = https://<r2-public-host>/vnc.bin
+VITE_VNC_META_URL    = https://<r2-public-host>/vnc.meta.json
+VITE_FLYBODY_URL     = https://<r2-public-host>/flybody
+```
 
-Hobby caps individual files at 50 MB, so `brain.bin` has to live somewhere
-else (GitHub Release, Cloudflare R2, S3). Same for any flybody mesh that
-crosses the 50 MB line — most are < 5 MB so usually only `brain.bin`
-matters.
+`<r2-public-host>` is either your bucket's `r2.dev` subdomain or your
+custom domain. Find it in Cloudflare dashboard → R2 → bucket →
+Settings → Public access.
 
-1. Upload `public/brain.bin` and `public/brain.meta.json` to a GitHub
-   Release on this repo:
+`public/_headers` already sets long immutable cache on the JS bundle
+and WASM. The R2 bucket should also serve `Cache-Control:
+public, max-age=31536000, immutable` — set this once via:
 
-   ```bash
-   gh release create v0.1.0 \
-     public/brain.bin \
-     public/brain.meta.json
-   ```
+```bash
+wrangler r2 bucket cors put webgpu-fly-assets --cors-rules '[
+  { "AllowedOrigins": ["https://your-pages.pages.dev","https://your-domain.com"],
+    "AllowedMethods": ["GET","HEAD"],
+    "AllowedHeaders": ["*"],
+    "MaxAgeSeconds": 86400 }
+]'
+```
 
-   Note the public download URLs.
+## Path 2 — Vercel
 
-2. Optional: upload the flybody mesh dir too if you want to slim the
-   deploy further (~134 MB).
-
-   ```bash
-   tar -czf flybody.tar.gz -C public flybody
-   gh release upload v0.1.0 flybody.tar.gz
-   ```
-
-   You'd then need to extract on a CDN that serves them at a known URL.
-
-3. Set env vars in your Vercel project (Settings → Environment Variables):
-
-   - `VITE_BRAIN_URL` = `https://github.com/<you>/webgpu-fly/releases/download/v0.1.0/brain.bin`
-   - `VITE_BRAIN_META_URL` = `https://.../brain.meta.json`
-   - `VITE_FLYBODY_URL` = `https://your-cdn.example.com/flybody` (only if you offloaded flybody too)
-
-4. Deploy:
-
-   ```bash
-   vercel --prod
-   ```
-
-## Path 3 — GitHub Pages
-
-Pages caps individual files at 100 MB and total repo at 1 GB. `brain.bin`
-at 120 MB doesn't fit. Use Path 2's release-host trick + push only `dist/`
-without the heavy assets to a `gh-pages` branch.
-
-## CORS
-
-GitHub Releases serve with permissive CORS so cross-origin fetches from
-your Vercel domain work without configuration. Cloudflare R2 needs a
-CORS rule allowing your domain.
+`vercel.json` and the `deploy:vercel` script are still here as fallback.
+Vercel Pro tolerates the 120 MB `brain.bin` directly; Hobby caps files
+at 50 MB so you'd need the same R2-style external host (or a GitHub
+Release).
 
 ## Cache strategy
 
-`vercel.json` tags `brain.bin`, `brain.meta.json`, the flybody dir, and
-the WASM blob with `Cache-Control: public, max-age=31536000, immutable`.
-The runtime also keeps an IndexedDB copy (`src/cache.ts`) so a returning
-visitor pays zero network bandwidth on subsequent loads.
+Three layers cooperate:
+
+1. **R2** serves with long-immutable `Cache-Control` so Cloudflare's
+   edge fronts the bytes globally.
+2. **Pages `_headers`** does the same for the JS and WASM.
+3. **IndexedDB cache** (`src/cache.ts`) stores the flybody OBJs
+   browser-side after first fetch, so a returning visitor skips the
+   network entirely.
