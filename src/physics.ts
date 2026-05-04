@@ -279,7 +279,11 @@ export class Physics {
         const v = 1.0 * this.fwdCmd;  // 1 cm/s per unit fwd command
         qvel[0] = fx * v;
         qvel[1] = fy * v;
-        qvel[5] = -this.turnCmd * 2.0 * Math.max(0.5, Math.sqrt(Math.abs(this.fwdCmd)));
+        // Yaw gain calibrated so a closed-loop sweep at turn=±0.5
+        // can find the target inside one camera-tick window. With
+        // mujoco dt=0.1ms × 32 substeps × ~15 RAF/sec = ~48 ms sim
+        // per closed-loop tick, gain of 6 gives ~17°/tick at |turn|=0.5.
+        qvel[5] = -this.turnCmd * 6.0;
       }
       this.mujoco.mj_step(this.model, this.data);
     }

@@ -198,6 +198,49 @@ test.describe("webgpu-fly e2e", () => {
     expect(drive).toMatch(/MANC\s*:\s*leg/);
   });
 
+  // Brain-internal cascade test only for DNs whose primary projection
+  // stays inside the brain (DNa01/DNa02). DNb01, DNp01, DNg13 are
+  // descending neurons whose main targets live in the VNC — biologically
+  // they should NOT light up many brain neurons. For those we test the
+  // motor outcome separately ("DNb01 moonwalker drives backward" etc.)
+  // which routes through the MANC spine.
+  for (const dn of ["DNa01", "DNa02"]) {
+    test(`${dn} ignites a real brain-internal cascade (recruits > 50)`, async ({ page }) => {
+      await clickButton(page, dn);
+      await waitButtonIdle(page, dn);
+      const log = await logText(page);
+      const slice = log.slice(log.lastIndexOf(`DN stim: ${dn}`));
+      const m = slice.match(/final-window recruits: ([\d,]+)/);
+      expect(m, `${dn} recruits line missing`).not.toBeNull();
+      const recruits = parseInt(m![1].replace(/,/g, ""), 10);
+      expect(recruits, `${dn} cascade too cold: ${recruits} recruits`).toBeGreaterThan(50);
+    });
+  }
+
+  // Closed-loop should not flee from the target. We're modest about
+  // what "tracking" requires here — the fly may temporarily lose sight
+  // mid-turn — but the run as a whole shouldn't show the fly walking
+  // off into space, and at least one tick should have a finite angle
+  // proving the retina did sample the target at some point.
+  test("closed-loop doesn't flee from target", async ({ page }) => {
+    await waitForLog(page, "flybody attached", 120_000);
+    await clickButton(page, "Track target");
+    await page.waitForTimeout(12_000);
+    await clickButton(page, "Track target");
+    const log = await logText(page);
+    const ticks = [...log.matchAll(/tick (\d+): angle=([^°]+)° dist=([\d.]+)cm/g)];
+    expect(ticks.length, "no tick lines").toBeGreaterThan(2);
+    const firstDist = parseFloat(ticks[0][3]);
+    const lastDist = parseFloat(ticks[ticks.length - 1][3]);
+    // No long-distance flee: fly should stay within ~2 cm of where it
+    // started the run, not walk off-screen.
+    expect(lastDist, `fly walked off (${firstDist}cm → ${lastDist}cm)`).toBeLessThan(firstDist + 2.0);
+    // At least one of the logged ticks must have seen the target
+    // (finite angle), proving the retina path is connected.
+    const seenAtLeastOnce = ticks.some((t) => t[2].trim() !== "NaN");
+    expect(seenAtLeastOnce, `retina never saw target across ${ticks.length} ticks`).toBe(true);
+  });
+
   test("Spontaneous keeps brain quiet (KC < 5%)", async ({ page }) => {
     await clickButton(page, "Spontaneous");
     await waitButtonIdle(page, "Spontaneous");

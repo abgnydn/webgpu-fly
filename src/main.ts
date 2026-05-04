@@ -725,7 +725,11 @@ async function main() {
     log("");
     log(`--- DN stim: ${name} (${idxs.length} neurons, ${famousDnLabels[name] ?? ""}) ---`, "ok");
     const ext = new Float32Array(header.numNeurons);
-    for (const idx of idxs) ext[idx] = 1.5;   // strong pulse
+    // Direct stim of just 2 DN neurons needs a hefty amplitude to
+    // ignite a real cascade through the alpha-synapse-shaped fan-out.
+    // Lower than ~3.0 leaves DN-with-weak-downstream (DNb01, DNg13,
+    // DNp01) firing only the 2 stimmed cells with no propagation.
+    for (const idx of idxs) ext[idx] = 4.0;
     sim.reset(); resetVnc();
     sim.setExternalInput(ext);
     viewer.clearSnapshots();
@@ -804,6 +808,11 @@ async function main() {
     driveFwd = 0;
     driveTurn = 0;
     room.setDrive(0, 0);
+    // Yield long enough for the room's render tick to repaint the
+    // retina from the just-reset body pose. Otherwise tick 1 reads
+    // stale retina pixels (from before the reset, when the body had
+    // wandered) and falsely reports the target lost.
+    await new Promise((r) => setTimeout(r, 100));
     // Sample 4000 optic neurons per side — enough cascade to reach DN
     // through the connectome's optic→central wiring. Below ~2000 the
     // signal dissipates before producing meaningful DN activity.
@@ -817,6 +826,8 @@ async function main() {
 
     const ext = new Float32Array(header.numNeurons);
     let tick = 0;
+    let lostTicks = 0;
+    let lastKnownTurnDir = 1;
     while (continuousMode) {
       // Sense from a real retinal render at the fly's head pose. No
       // geometry shortcut — pixels of the scene get sampled, red blob
@@ -826,29 +837,41 @@ async function main() {
       const dist = room.targetDistance();
       ext.fill(0);
       if (Number.isFinite(angle) && sample.area > 0) {
+        lostTicks = 0;
+        lastKnownTurnDir = angle > 0 ? 1 : -1;
         const align = 1 - Math.abs(angle) / RETINA_FOV_RAD;     // 0..1
         const lScale = align * (angle > 0 ? 1.0 : 0.3);
         const rScale = align * (angle < 0 ? 1.0 : 0.3);
-        // Stim amplitude proportional to visual subtense (area of red
-        // blob): bigger spot = stronger optic drive. Plus a floor so
-        // even a distant blob produces some cascade.
         const amp = 1.5 + 12 * sample.area;
         for (const i of lSubset) ext[i] = amp * lScale;
         for (const i of rSubset) ext[i] = amp * rScale;
+      } else {
+        lostTicks++;
       }
       sim.setExternalInput(ext);
 
-      // Step brain in a short burst (50 ms simulated). This is small
-      // enough to keep latency tight (~0.25 s wall per tick) but long
-      // enough to let cascades propagate and DN activity settle.
+      // Step brain in a short burst (50 ms simulated).
       const rate = await sim.captureRollingRate(50);
       viewer.pushSnapshot(rate);
-      // Brain → VNC stand-in → body. Visual cue is plumbed in so the
-      // closed loop tightens via the same path as the famous-DN buttons.
-      await applyDriveFromSnapshot(rate, sample);
+
+      if (lostTicks > 0) {
+        // Target off-camera. Bypass brain→spine motor (the residual
+        // VNC state would keep pushing the fly forward off-axis) and
+        // set drive directly. Fwd=0 to hold position; turn alternates
+        // every 8 ticks. Start in the opposite direction of last seen
+        // angle since fly almost always overshoots the target before
+        // losing it.
+        const scanCycle = Math.floor((lostTicks - 1) / 8) % 2 === 0 ? -1 : 1;
+        driveFwd = 0;
+        driveTurn = lastKnownTurnDir * scanCycle * 0.5;
+        room.setDrive(driveFwd, driveTurn);
+      } else {
+        // Brain → VNC stand-in → body via the normal motor path.
+        await applyDriveFromSnapshot(rate, sample);
+      }
 
       tick++;
-      if (tick % 10 === 0) {
+      if (tick <= 10 || tick % 10 === 0) {
         log(`  tick ${tick}: angle=${(angle * 180 / Math.PI).toFixed(0)}° dist=${dist.toFixed(1)}cm fwd=${driveFwd.toFixed(2)} turn=${driveTurn.toFixed(2)}`);
       }
       // Yield to render.
