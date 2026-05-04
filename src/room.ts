@@ -70,6 +70,7 @@ export class Room {
   // flybody's head is at body-local +x, so the fly's spawn heading is
   // world +x. Place the target 3 cm in that direction.
   private target: THREE.Mesh | null = null;
+  private targetGlow: THREE.PointLight | null = null;
   targetPos: [number, number, number] = [3.0, 0, 0.13];
 
   // Retinal sample state. Render target + camera positioned each frame
@@ -143,14 +144,22 @@ export class Room {
     // inside the mjRoot so it shares the y-up rotation + scale.
     // Target ~5 mm radius in MJ frame so it's visible from a 30-unit
     // orbit camera even with VISUAL_SCALE=6.
-    const targetGeo = new THREE.SphereGeometry(0.5, 16, 12);
+    const targetGeo = new THREE.SphereGeometry(0.5, 24, 18);
     const targetMat = new THREE.MeshStandardMaterial({
-      color: 0xff3a3a, emissive: 0xff1010, emissiveIntensity: 1.5,
+      color: 0xff3a3a, emissive: 0xff1010, emissiveIntensity: 2.5,
       roughness: 0.4, metalness: 0.1,
     });
     this.target = new THREE.Mesh(targetGeo, targetMat);
     this.target.position.set(this.targetPos[0], this.targetPos[2], -this.targetPos[1]);
     this.mjRoot.add(this.target);
+
+    // A point light at the target position so it casts a subtle glow on
+    // the surrounding floor — makes it easier to spot with peripheral
+    // vision when the fly is far away.
+    const targetGlow = new THREE.PointLight(0xff5050, 4, 6, 1.6);
+    targetGlow.position.copy(this.target.position);
+    this.mjRoot.add(targetGlow);
+    this.targetGlow = targetGlow;
 
     this.updateCameraFromOrbit();
     this.attachInput();
@@ -221,7 +230,11 @@ export class Room {
         const r = px[o], g = px[o + 1], b = px[o + 2];
         // Red-dominant pixel: r >> g, b. The target's emissive red pops
         // way past the dim grid (max grid color ~0x2a3340 = 42, 51, 64).
-        if (r > 140 && r > g * 2 + 20 && r > b * 2 + 20) {
+        // The retina readback is in linear color space (Three.js renders
+        // to the RT without sRGB encoding), so 0xff red shows up as
+        // byte ~80 instead of 255. Threshold around 50 catches the
+        // target even at oblique angles where edges smear.
+        if (r > 50 && r > g + b + 10) {
           const w = r;                 // brighter pixels weighted higher
           weightSum += w;
           xSum += w * x;
@@ -503,20 +516,24 @@ export class Room {
 
   // --- camera / input -------------------------------------------------------
   private updateCameraFromOrbit() {
-    let lookY = 1;
+    // Orbit around the fly's current world position, not origin —
+    // otherwise the body walks out of frame as soon as it moves.
+    let cx = 0, cy = 1, cz = 0;
     if (this.physics) {
       const xpos = this.physics.data.xpos as Float64Array;
-      // Body 1 is thorax. MJ z (height) → TJ y after swizzle.
-      lookY = (xpos[3 * 1 + 2] || 0) * VISUAL_SCALE;
+      // Body 1 is thorax. MJ (x, y, z) → TJ (x, z, -y) after swizzle.
+      cx = xpos[3 * 1 + 0] * VISUAL_SCALE;
+      cy = xpos[3 * 1 + 2] * VISUAL_SCALE;
+      cz = -xpos[3 * 1 + 1] * VISUAL_SCALE;
     }
     const ce = Math.cos(this.elevation), se = Math.sin(this.elevation);
     const ca = Math.cos(this.azimuth), sa = Math.sin(this.azimuth);
     this.camera.position.set(
-      this.radius * ce * sa,
-      lookY + this.radius * se,
-      this.radius * ce * ca,
+      cx + this.radius * ce * sa,
+      cy + this.radius * se,
+      cz + this.radius * ce * ca,
     );
-    this.camera.lookAt(0, lookY, 0);
+    this.camera.lookAt(cx, cy, cz);
   }
 
   private attachInput() {
@@ -557,8 +574,19 @@ export class Room {
   }
 
   private startLoop() {
+    let t0 = performance.now();
     const tick = () => {
       this.rafId = requestAnimationFrame(tick);
+      // Soft pulse on the target — makes it visible from a distance
+      // and conveys "I am the thing the fly should look at."
+      if (this.target && this.targetGlow) {
+        const t = (performance.now() - t0) / 1000;
+        // Pulse stays well above the retina's red detection floor so the
+        // closed loop never loses the target during a dim phase.
+        const pulse = 1.1 + 0.25 * Math.sin(t * 3.5);
+        (this.target.material as THREE.MeshStandardMaterial).emissiveIntensity = 2.5 * pulse;
+        this.targetGlow.intensity = 4.5 * pulse;
+      }
       if (this.physics && this.bodies.length) {
         // Brain → VNC stand-in → body. Two motor primitives selected
         // by DN drive: tripod walk gait (amplitude = forward) and

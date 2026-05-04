@@ -353,3 +353,11 @@ export function motorFromBrain(rate: Float32Array, ctx: MotorContext): MotorComm
 
 /** Reset the shared VNC state (call from sim.reset). */
 export function resetVnc() { sharedVnc.reset(); }
+
+/** Last-known firing rates of the spine's output pools. UI uses these
+ * to render a small bar showing the spine is alive. */
+export function vncSnapshot(): { fwdRate: number; bwdRate: number; escape: number } {
+  // Read from a no-op step that doesn't change input state.
+  const out = sharedVnc.step(0);
+  return { fwdRate: out.fwdRate, bwdRate: out.bwdRate, escape: out.escape };
+}

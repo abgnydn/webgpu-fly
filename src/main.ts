@@ -5,7 +5,7 @@ import { FlySim, DEFAULT_PARAMS } from "./sim";
 import { FlyViewer } from "./viewer";
 import { Room, RETINA_FOV_RAD } from "./room";
 import { Physics } from "./physics";
-import { motorFromBrain, resetVnc, type MotorContext } from "./vnc";
+import { motorFromBrain, resetVnc, vncSnapshot, type MotorContext } from "./vnc";
 import { GaitEvolver } from "./evolution";
 
 const SUPER_CLASS = [
@@ -430,11 +430,19 @@ async function main() {
       const ms = viewer.current * STEPS_PER_SNAPSHOT * sim.params.dtMs;
       label.textContent = `snap ${viewer.current} / ${viewer.numSnapshots}  (t=${ms.toFixed(0)} ms)`;
     }
-    // Append body speed to the embodiment readout each tick.
+    // Compose the embodiment readout: motor command, body speed, and a
+    // live snapshot of the VNC's forward / backward / escape pool rates
+    // so you can see the spine is alive even when the brain is silent.
     const sp = room.bodySpeed();
-    const cur = driveReadout.textContent ?? "";
-    const tag = `  speed ${sp.toFixed(2)} cm/s`;
-    driveReadout.textContent = cur.replace(/\s+speed[^\s]*\s*cm\/s$/, "") + tag;
+    const vnc = vncSnapshot();
+    const bar = (r: number, w = 10) => {
+      const n = Math.max(0, Math.min(w, Math.round(r * w * 3)));
+      return "█".repeat(n) + "·".repeat(w - n);
+    };
+    driveReadout.innerHTML = [
+      `fwd ${driveFwd.toFixed(2)}  turn ${driveTurn.toFixed(2)}  speed ${sp.toFixed(2)} cm/s`,
+      `<span style="opacity:0.7">spine: fwd ${bar(vnc.fwdRate)}  bwd ${bar(vnc.bwdRate)}  esc ${bar(vnc.escape)}</span>`,
+    ].join("<br>");
   }, 50);
 
   let busy = false;
