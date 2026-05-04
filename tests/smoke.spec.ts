@@ -155,4 +155,62 @@ test.describe("webgpu-fly e2e", () => {
     const speed = parseFloat(m![1]);
     expect(speed, `body didn't move under DNa02 (speed=${speed} cm/s)`).toBeGreaterThan(0.1);
   });
+
+  // Literature-grounded firing-rate assertions. KC sparsity is the
+  // canonical mushroom-body result (Honegger 2011, Lin 2014), ORN goes
+  // to 100% under direct olfactory drive, DN should be > 5% under broad
+  // sensory drive. These catch regressions in the brain calibration
+  // even when the body / spine / retina paths look healthy.
+
+  test("Olfactory hit drives ORNs to 100%", async ({ page }) => {
+    await clickButton(page, "Olfactory hit");
+    await waitButtonIdle(page, "Olfactory hit");
+    const log = await logText(page);
+    const ornMatch = log.match(/ORN\s+(\d+)\s*\/\s*(\d+)/g);
+    expect(ornMatch, "ORN line missing").not.toBeNull();
+    const last = ornMatch![ornMatch!.length - 1];
+    const [_, hit, total] = last.match(/(\d+)\s*\/\s*(\d+)/)!;
+    const pct = (parseInt(hit, 10) / parseInt(total, 10)) * 100;
+    expect(pct, `ORN should be near 100%, got ${pct}%`).toBeGreaterThan(80);
+  });
+
+  test("Mixed sensory drives DN cascade above 5%", async ({ page }) => {
+    await clickButton(page, "Mixed sensory");
+    await waitButtonIdle(page, "Mixed sensory");
+    const log = await logText(page);
+    const dnMatch = log.match(/DN\s+\d+\s*\/\s*\d+\s*\(([\d.]+)%\)/g);
+    expect(dnMatch, "DN line missing").not.toBeNull();
+    const last = dnMatch![dnMatch!.length - 1];
+    const pct = parseFloat(last.match(/\(([\d.]+)%\)/)![1]);
+    expect(pct, `DN cascade too cold under broad sensory drive: ${pct}%`).toBeGreaterThan(5);
+  });
+
+  test("MANC spine reports motor activity in drive readout", async ({ page }) => {
+    await waitForLog(page, "flybody attached", 120_000);
+    await clickButton(page, "DNa01");
+    await waitButtonIdle(page, "DNa01");
+    await page.waitForTimeout(2_000);
+    const drive = await page.locator("#drive-readout").innerHTML();
+    // The MANC line is only present when vnc.bin loaded successfully.
+    if (!drive.includes("MANC")) {
+      test.skip(true, "MANC not loaded (no vnc.bin) — skipping");
+    }
+    expect(drive).toMatch(/MANC\s*:\s*leg/);
+  });
+
+  test("Spontaneous keeps brain quiet (KC < 5%)", async ({ page }) => {
+    await clickButton(page, "Spontaneous");
+    await waitButtonIdle(page, "Spontaneous");
+    const log = await logText(page);
+    // Slice from the LAST "--- Spontaneous ---" header to end-of-log,
+    // then read the KC% in that slice. JS regex doesn't have \z so a
+    // simple substring is more reliable than a single regex.
+    const idx = log.lastIndexOf("--- Spontaneous ---");
+    expect(idx, "Spontaneous block missing").toBeGreaterThanOrEqual(0);
+    const slice = log.slice(idx);
+    const kc = slice.match(/KC\s+\d+\s*\/\s*\d+\s*\(([\d.]+)%\)/);
+    expect(kc, "Spontaneous KC line missing").not.toBeNull();
+    const pct = parseFloat(kc![1]);
+    expect(pct, `Spontaneous KC should be ~0%, got ${pct}%`).toBeLessThan(5);
+  });
 });

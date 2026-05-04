@@ -19,14 +19,15 @@ export interface SimParams {
 // LIF state constants are from Shiu et al. 2024 (Nature 632:210–217;
 // github.com/philshiu/Drosophila_brain_model/model.py):
 //   v_0 / v_rst = -52 mV   v_th = -45 mV   t_mbr = 20 ms   t_rfc = 2.2 ms
-// w_syn and ext_gain are scaled DOWN relative to Shiu's 0.275 mV figure:
-// his model uses an alpha synapse (g grows from spike, decays with
-// tau_syn=5ms) that spreads each spike's effect over ~5 ms. Our kernel
-// does direct injection in a single 1-ms step, so the equivalent
-// one-shot weight is roughly w_syn × tau_syn / t_mbr = 0.275 × 5/20 ≈
-// 0.069 mV per synapse to match the integrated current of one spike.
-// We round to 0.05 and raise extGain so the existing presets still fire.
-// A proper alpha synapse can replace this calibration step later.
+//   tau_syn = 5 ms (alpha synapse)
+//
+// The kernel runs a real two-state alpha synapse, A_SYN = exp(-1/5).
+// w_syn is tuned EMPIRICALLY (not from peak-matching) to land KC at the
+// canonical 5-15% on Mixed sensory. Alpha synapse integrates each spike
+// over ~5ms so the cascade amplifies non-linearly vs old single-step
+// direct injection — peak-matching gives way too hot a brain (73% KC).
+// 0.005 keeps the dataset's natural cascade strength visible without
+// runaway.
 export const DEFAULT_PARAMS: SimParams = {
   dtMs: 1.0,
   tauMs: 20.0,
@@ -35,7 +36,7 @@ export const DEFAULT_PARAMS: SimParams = {
   vRest: -52.0,
   refractoryMs: 2.2,
   extGain: 2.0,
-  wSyn: 0.05,
+  wSyn: 0.005,
 };
 
 const PARAMS_BYTES = 36; // matches struct Params in lif.wgsl (9 × 4 bytes)
@@ -59,6 +60,8 @@ export class FlySim {
   private vmBuf!: GPUBuffer;
   private refracBuf!: GPUBuffer;
   private extBuf!: GPUBuffer;
+  private gxBuf!: GPUBuffer;       // alpha-synapse state x
+  private gyBuf!: GPUBuffer;       // alpha-synapse state y (= synaptic current)
   private accumBuf!: GPUBuffer;    // per-neuron spike count over current window
 
   private bindAtoB!: GPUBindGroup; // gather reads A, writes B
@@ -74,12 +77,14 @@ export class FlySim {
     const adapter = await navigator.gpu.requestAdapter();
     if (!adapter) throw new Error("no GPU adapter");
 
-    // We need enough headroom for col_idx + weight which can each be ~20 MB
-    // for the aggregated v1 — well under default limits — but request adapter
-    // max in case raw-synapse mode is enabled later.
+    // Request the adapter's maxes for storage. The LIF kernel binds 10
+    // storage buffers (csr×3, spikes×2, vm, refrac, ext, g_x, g_y);
+    // WebGPU's default cap is 8, so without this request the kernel
+    // dispatches silently with no work — we hit that bug last time.
     const required = {
       maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
       maxBufferSize: adapter.limits.maxBufferSize,
+      maxStorageBuffersPerShaderStage: adapter.limits.maxStorageBuffersPerShaderStage,
     };
     const device = await adapter.requestDevice({ requiredLimits: required });
 
@@ -149,6 +154,20 @@ export class FlySim {
       label: "ext_input",
     });
 
+    // Alpha-synapse states. Zero-initialized by WebGPU spec; reset()
+    // also explicitly zeros them on stim restart so transients don't
+    // leak across runs.
+    this.gxBuf = device.createBuffer({
+      size: N * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      label: "g_x",
+    });
+    this.gyBuf = device.createBuffer({
+      size: N * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      label: "g_y",
+    });
+
     this.accumBuf = device.createBuffer({
       size: N * 4,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
@@ -171,6 +190,8 @@ export class FlySim {
         { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
         { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+        { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
       ],
     });
     const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] });
@@ -199,6 +220,8 @@ export class FlySim {
           { binding: 6, resource: { buffer: this.vmBuf } },
           { binding: 7, resource: { buffer: this.refracBuf } },
           { binding: 8, resource: { buffer: this.extBuf } },
+          { binding: 9, resource: { buffer: this.gxBuf } },
+          { binding: 10, resource: { buffer: this.gyBuf } },
         ],
       });
     this.bindAtoB = mkBind(this.spikesA, this.spikesB);
@@ -255,7 +278,8 @@ export class FlySim {
     this.device.queue.writeBuffer(this.paramsBuf, 0, ab);
   }
 
-  /** Hard reset: Vm to v_rest, refrac to 0, both spike bitsets to 0. */
+  /** Hard reset: Vm to v_rest, refrac to 0, alpha-synapse state to 0,
+   * both spike bitsets to 0. */
   reset() {
     const N = this.brain.header.numNeurons;
     const words = (N + 31) >>> 5;
@@ -264,6 +288,9 @@ export class FlySim {
     this.device.queue.writeBuffer(this.vmBuf, 0, vm0);
     const zerosN = new Uint32Array(N);
     this.device.queue.writeBuffer(this.refracBuf, 0, zerosN);
+    const zerosF = new Float32Array(N);
+    this.device.queue.writeBuffer(this.gxBuf, 0, zerosF);
+    this.device.queue.writeBuffer(this.gyBuf, 0, zerosF);
     const zerosW = new Uint32Array(words);
     this.device.queue.writeBuffer(this.spikesA, 0, zerosW);
     this.device.queue.writeBuffer(this.spikesB, 0, zerosW);

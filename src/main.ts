@@ -314,7 +314,14 @@ async function main() {
    * No-op (returns null) if vnc.bin wasn't loaded — caller falls back
    * to the synthetic spine path.
    */
-  async function runRealSpine(brainRate: Float32Array): Promise<Record<string, number> | null> {
+  interface MancMotor {
+    legs: Record<string, number>;          // T1_left … T3_right
+    wing: number;                           // mean wing motor rate
+    neck: number;                           // mean neck motor rate
+    abdomen: number;                        // mean abdomen motor rate
+  }
+
+  async function runRealSpine(brainRate: Float32Array): Promise<MancMotor | null> {
     if (!vncSim || !vncMeta) return null;
     const N = vncSim.brain.header.numNeurons;
     const ext = new Float32Array(N);
@@ -328,26 +335,37 @@ async function main() {
       let sum = 0;
       for (const i of brainIdxs) sum += brainRate[i];
       const meanBrain = brainIdxs.length ? sum / brainIdxs.length : 0;
-      // Gain so a 30 Hz brain DN rate (rate ~0.03 spikes/step at 1 kHz)
-      // depolarizes the VNC neuron by ~3 mV/step. Comfortable above
-      // threshold once the cascade adds in.
       const drive = meanBrain * 30;
       for (const idx of vncIdxs) ext[idx] = drive;
     }
     vncSim.setExternalInput(ext);
     const vncRate = await vncSim.captureRollingRate(20);
     // Aggregate motor neuron rates per leg+side.
-    const motor: Record<string, number> = {};
+    const legs: Record<string, number> = {};
     for (const [legKey, group] of Object.entries(vncMeta.motor)) {
       let sum = 0;
       for (const i of group.all) sum += vncRate[i];
-      motor[legKey] = group.all.length ? sum / group.all.length : 0;
+      legs[legKey] = group.all.length ? sum / group.all.length : 0;
     }
-    return motor;
+    // Subclass aggregates (wm = wing, nm = neck, ad = abdomen).
+    const aggSub = (key: string): number => {
+      const idxs = vncMeta!.motor_by_subclass[key];
+      if (!idxs || idxs.length === 0) return 0;
+      let s = 0;
+      for (const i of idxs) s += vncRate[i];
+      return s / idxs.length;
+    };
+    return {
+      legs,
+      wing: aggSub("wm"),
+      neck: aggSub("nm"),
+      abdomen: aggSub("ad"),
+    };
   }
 
   let driveFwd = 0, driveTurn = 0; // smoothed
   let lastSpineMode = "synthetic"; // tracked for the diagnostic readout
+  let lastMancActivity = { legs: 0, wing: 0, neck: 0, abdomen: 0 };
   // Build VNC stand-in context once; reused by every drive update.
   const vncCtx: MotorContext = {
     famousDns,
@@ -375,13 +393,14 @@ async function main() {
       const rightKeys = ["T1_right", "T2_right", "T3_right"];
       const meanOf = (ks: string[]) => {
         let s = 0, n = 0;
-        for (const k of ks) if (k in realMotor) { s += realMotor[k]; n++; }
+        for (const k of ks) if (k in realMotor.legs) { s += realMotor.legs[k]; n++; }
         return n ? s / n : 0;
       };
       const meanL = meanOf(leftKeys);
       const meanR = meanOf(rightKeys);
       mancTotal = meanL + meanR;
       mancAsym = meanR - meanL;
+      lastMancActivity = { legs: mancTotal, wing: realMotor.wing, neck: realMotor.neck, abdomen: realMotor.abdomen };
     }
     if (mancTotal > 0.001) {
       // MANC is firing meaningfully — use its magnitude with synthetic
@@ -434,7 +453,14 @@ async function main() {
   // If vnc.bin is missing, the synthetic 200-neuron spine in vnc.ts
   // remains the motor source — same code path, different controller.
   let vncSim: FlySim | null = null;
-  let vncMeta: { dn_inputs: Record<string, number[]>; motor: Record<string, { all: number[] }>; num_neurons: number; num_edges: number } | null = null;
+  let vncMeta: {
+    dn_inputs: Record<string, number[]>;
+    motor: Record<string, { all: number[] } & Record<string, number[]>>;
+    motor_by_subclass: Record<string, number[]>;
+    motor_by_target: Record<string, number[]>;
+    num_neurons: number;
+    num_edges: number;
+  } | null = null;
   const vncUrl = import.meta.env.VITE_VNC_URL || "/vnc.bin";
   const vncMetaUrl = import.meta.env.VITE_VNC_META_URL || "/vnc.meta.json";
   bootStage("vnc", "run", "fetching MANC connectome (43 MB)…");
@@ -599,10 +625,15 @@ async function main() {
       const n = Math.max(0, Math.min(w, Math.round(r * w * 3)));
       return "█".repeat(n) + "·".repeat(w - n);
     };
-    driveReadout.innerHTML = [
-      `fwd ${driveFwd.toFixed(2)}  turn ${driveTurn.toFixed(2)}  speed ${sp.toFixed(2)} cm/s`,
-      `<span style="opacity:0.7">spine: fwd ${bar(vnc.fwdRate)}  bwd ${bar(vnc.bwdRate)}  esc ${bar(vnc.escape)}</span>`,
-    ].join("<br>");
+    const lines = [
+      `fwd ${driveFwd.toFixed(2)}  turn ${driveTurn.toFixed(2)}  speed ${sp.toFixed(2)} cm/s  <span style="opacity:0.5">[${lastSpineMode}]</span>`,
+      `<span style="opacity:0.7">synth: fwd ${bar(vnc.fwdRate)}  bwd ${bar(vnc.bwdRate)}  esc ${bar(vnc.escape)}</span>`,
+    ];
+    if (vncMeta) {
+      const m = lastMancActivity;
+      lines.push(`<span style="opacity:0.7">MANC : leg ${bar(m.legs)}  wing ${bar(m.wing)}  abd ${bar(m.abdomen)}</span>`);
+    }
+    driveReadout.innerHTML = lines.join("<br>");
   }, 50);
 
   let busy = false;

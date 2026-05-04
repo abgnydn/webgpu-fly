@@ -167,10 +167,26 @@ def leg_segment_packed(row) -> int:
 
 
 def build_meta(df: pd.DataFrame) -> dict:
-    """Build the runtime-side index map: which dense-indices are which DN
-    by name; which are motor neurons by leg + side."""
+    """Build the runtime-side index map. Motor neurons are split by:
+      - body region (subclass: fl/ml/hl=front/middle/hind leg, wm=wing,
+        nm=neck, hm=haltere, ad=abdomen-dorsal),
+      - per-leg + side (T1/T2/T3 × left/right, biomechanical key),
+      - per-muscle target group (ti_flexor, ti_extensor, tr_flexor,
+        tr_extensor, fe_reductor, etc.) for muscle-level readout.
+    """
     dn_inputs: dict[str, list[int]] = {}
     motor: dict[str, dict[str, list[int]]] = {}
+    motor_by_subclass: dict[str, list[int]] = {}
+    motor_by_target: dict[str, list[int]] = {}
+
+    def normalise_target(raw) -> str | None:
+        if raw is None or (isinstance(raw, float) and np.isnan(raw)):
+            return None
+        s = str(raw).strip().lower()
+        # Collapse e.g. "Ti flexor" / "Acc. ti flexor" → "ti_flexor"
+        s = s.replace(".", "").replace("/", "_").replace("-", "_")
+        s = "_".join(s.split())
+        return s or None
 
     for idx, row in df.iterrows():
         cls = classify(row)
@@ -178,22 +194,33 @@ def build_meta(df: pd.DataFrame) -> dict:
         if cls == CLASS_DN_INPUT and ty:
             dn_inputs.setdefault(ty, []).append(int(idx))
         elif cls == CLASS_MOTOR:
-            nm = str(row.get("somaNeuromere") or "")
-            side = str(row.get("somaSide") or "")
-            leg_label = None
-            if "T1" in nm.upper(): leg_label = "T1"
-            elif "T2" in nm.upper(): leg_label = "T2"
-            elif "T3" in nm.upper(): leg_label = "T3"
-            if not leg_label:
-                continue
-            side_label = "left" if side == "LHS" else "right" if side == "RHS" else "mid"
-            key = f"{leg_label}_{side_label}"
-            motor.setdefault(key, {"all": []})["all"].append(int(idx))
+            sub = row.get("subclass")
+            if isinstance(sub, str):
+                motor_by_subclass.setdefault(sub, []).append(int(idx))
+            tgt = normalise_target(row.get("target"))
+            if tgt:
+                motor_by_target.setdefault(tgt, []).append(int(idx))
+
+            # Per-leg + side bucketing (only for fl/ml/hl subclass —
+            # avoids dragging wing/neck/abdomen motors into "leg group").
+            sub_str = str(sub) if isinstance(sub, str) else ""
+            if sub_str in ("fl", "ml", "hl"):
+                leg_label = {"fl": "T1", "ml": "T2", "hl": "T3"}[sub_str]
+                raw_sd = row.get("somaSide")
+                side = "" if raw_sd is None or (isinstance(raw_sd, float) and np.isnan(raw_sd)) else str(raw_sd).upper()
+                side_label = "left" if side == "LHS" else "right" if side == "RHS" else "mid"
+                key = f"{leg_label}_{side_label}"
+                bucket = motor.setdefault(key, {"all": []})
+                bucket["all"].append(int(idx))
+                if tgt:
+                    bucket.setdefault(tgt, []).append(int(idx))
 
     cell_class_counts = df.apply(classify, axis=1).value_counts().to_dict()
     return {
         "dn_inputs": dn_inputs,
         "motor": motor,
+        "motor_by_subclass": motor_by_subclass,
+        "motor_by_target": motor_by_target,
         "cell_classes": {
             "unknown": int(cell_class_counts.get(CLASS_UNKNOWN, 0)),
             "dn_input": int(cell_class_counts.get(CLASS_DN_INPUT, 0)),
@@ -308,6 +335,8 @@ def main() -> None:
     print(f"  unknown   : {meta['cell_classes']['unknown']:,}")
     print(f"  DN names  : {len(meta['dn_inputs'])} unique types")
     print(f"  motor legs: {sorted(meta['motor'].keys())}")
+    print(f"  subclass  : {dict((k, len(v)) for k, v in sorted(meta['motor_by_subclass'].items()))}")
+    print(f"  muscles   : {len(meta['motor_by_target'])} distinct target groups")
 
 
 if __name__ == "__main__":

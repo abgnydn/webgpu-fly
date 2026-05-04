@@ -1,16 +1,21 @@
 // lif.wgsl — fused per-timestep LIF kernel for the FlyWire connectome.
 //
 // One thread per neuron. Each thread:
-//   1. Reads its row of incoming edges from the CSR (row_ptr, col_idx, weight).
-//   2. Sums presynaptic spikes from spikes_prev, weighted.
-//      Weights are pre-signed at build time (see tools/build_csr.py) so no
-//      branching on E/I in the inner loop.
-//   3. Adds external drive (Poisson stamped by host).
-//   4. Integrates Vm with a leaky update: v ← v_rest + alpha*(v - v_rest) + i_in
-//   5. Threshold + reset; sets spike bit in spikes_curr (atomic OR per word).
+//   1. Sums presynaptic spikes from spikes_prev (pre-signed weights).
+//   2. Advances a two-state alpha synapse so each spike spreads over
+//      ~tau_syn (5 ms) instead of being injected as a single-step
+//      pulse — matches Shiu et al. 2024 dynamics:
+//        g_y[n+1] = g_y[n]·a_syn + g_x[n]
+//        g_x[n+1] = g_x[n]·a_syn + delta_in
+//        i_syn    = g_y · w_syn
+//   3. Adds external drive, integrates Vm with the leaky update,
+//      threshold, atomic-OR spike bit into spikes_curr.
 //
-// Host ping-pongs spikes_prev / spikes_curr each timestep so the gather always
-// reads stable last-step state.
+// Host ping-pongs spikes_prev / spikes_curr each timestep so the gather
+// always reads stable last-step state. The Params struct stayed at its
+// proven 9-field / 36-byte layout; a_syn is a compile-time const here
+// instead of a runtime field, which sidesteps the silent-dispatch
+// failure we hit when expanding the uniform struct.
 
 struct Params {
   num_neurons      : u32,
@@ -21,20 +26,27 @@ struct Params {
   refractory_steps : u32,
   ext_gain         : f32,
   step             : u32,
-  w_syn            : f32,   // Shiu 2024: 0.275 mV per synapse count
+  w_syn            : f32,   // calibrated for alpha synapse: ~0.022 mV
 };
 
 @group(0) @binding(0) var<uniform>             params      : Params;
 @group(0) @binding(1) var<storage, read>       row_ptr     : array<u32>;
 @group(0) @binding(2) var<storage, read>       col_idx     : array<u32>;
 @group(0) @binding(3) var<storage, read>       weight      : array<f32>;
-@group(0) @binding(4) var<storage, read>       spikes_prev : array<u32>;        // packed bitset, 1 = fired last step
+@group(0) @binding(4) var<storage, read>       spikes_prev : array<u32>;
 @group(0) @binding(5) var<storage, read_write> spikes_curr : array<atomic<u32>>;
 @group(0) @binding(6) var<storage, read_write> vm          : array<f32>;
 @group(0) @binding(7) var<storage, read_write> refrac      : array<u32>;
 @group(0) @binding(8) var<storage, read>       ext_input   : array<f32>;
+@group(0) @binding(9) var<storage, read_write> g_x         : array<f32>;
+@group(0) @binding(10) var<storage, read_write> g_y        : array<f32>;
 
 const WG_SIZE : u32 = 64u;
+
+// a_syn = exp(-dt / tau_syn) for dt = 1 ms, tau_syn = 5 ms.
+// Hardcoded so we don't have to extend the Params struct (which broke
+// the kernel last time we tried).
+const A_SYN  : f32 = 0.81873;
 
 fn spike_bit(idx : u32) -> f32 {
   let word = spikes_prev[idx >> 5u];
@@ -47,21 +59,28 @@ fn step_lif(@builtin(global_invocation_id) gid : vec3<u32>) {
   if (i >= params.num_neurons) { return; }
 
   // 1. Synaptic gather over incoming edges. weight[k] is the pre-signed
-  // synapse count from build_csr.py; multiplied here by w_syn (mV per
-  // synapse count, Shiu et al. 2024) so summed input is in mV.
+  // synapse count from build_csr.py.
   let row_start = row_ptr[i];
   let row_end   = row_ptr[i + 1u];
-  var i_syn : f32 = 0.0;
+  var delta_in : f32 = 0.0;
   for (var k = row_start; k < row_end; k = k + 1u) {
     let pre = col_idx[k];
-    i_syn = i_syn + weight[k] * spike_bit(pre);
+    delta_in = delta_in + weight[k] * spike_bit(pre);
   }
-  i_syn = i_syn * params.w_syn;
 
-  // 2. External drive
+  // 2. Advance alpha synapse: g_y uses old g_x, then g_x absorbs new
+  // spikes. i_syn is g_y_new × w_syn.
+  let gx_old = g_x[i];
+  let gy_new = g_y[i] * A_SYN + gx_old;
+  let gx_new = gx_old * A_SYN + delta_in;
+  g_y[i] = gy_new;
+  g_x[i] = gx_new;
+  let i_syn = gy_new * params.w_syn;
+
+  // 3. External drive
   let i_in = i_syn + ext_input[i] * params.ext_gain;
 
-  // 3. Refractory
+  // 4. Refractory
   let r = refrac[i];
   if (r > 0u) {
     refrac[i] = r - 1u;
@@ -69,12 +88,12 @@ fn step_lif(@builtin(global_invocation_id) gid : vec3<u32>) {
     return;
   }
 
-  // 4. Leaky integrate
+  // 5. Leaky integrate
   let v_old = vm[i];
   let v_new = params.v_rest + params.alpha * (v_old - params.v_rest) + i_in;
   vm[i] = v_new;
 
-  // 5. Threshold + reset
+  // 6. Threshold + reset
   if (v_new >= params.v_thresh) {
     vm[i]     = params.v_reset;
     refrac[i] = params.refractory_steps;
