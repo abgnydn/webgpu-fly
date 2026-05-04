@@ -242,19 +242,44 @@ export class Physics {
     );
   }
 
-  /** Step physics N times. Body is driven by leg/wing actuators —
-   * no kinematic translation injection, no qpos rewriting. The only
-   * stabilizer is a soft pitch/roll angular damper that shrinks the
-   * freejoint's pitch and roll velocities each substep. This keeps
-   * the fly's heading from drifting off-axis (which would point the
-   * retina at the floor or sky), while still letting the body fall
-   * if it genuinely loses balance. */
+  /** Body-velocity command from the VNC layer; re-asserted by step()
+   * each substep so MuJoCo damping doesn't drain it. Set by driveLegs
+   * each frame. */
+  private fwdCmd = 0;
+  private turnCmd = 0;
+
+  /** Step physics N times.
+   *
+   * Body is driven by leg/wing actuators (visible in the leg motion
+   * you can see), PLUS a soft kinematic assist on the freejoint
+   * scaled by motor command. The leg actuators alone don't produce
+   * enough thrust in browser mujoco_wasm to make walking visible at
+   * normal viewing scale; the kinematic assist picks up that slack.
+   * Crucially the assist is PROPORTIONAL to the brain's motor command
+   * — when no DN fires, the term is zero and the body sits.
+   *
+   * Stabilizer: pitch/roll angular damper (×0.85 per substep) keeps
+   * the body upright without pinning orientation; the fly can still
+   * tip if it genuinely loses balance. */
   step(substeps = 1) {
+    const hasCmd = Math.abs(this.fwdCmd) > 0.01 || Math.abs(this.turnCmd) > 0.01;
     for (let s = 0; s < substeps; s++) {
+      const qpos = this.data.qpos as Float64Array;
       const qvel = this.data.qvel as Float64Array;
       if (qvel && qvel.length >= 6) {
         qvel[3] *= 0.85;   // pitch damping
         qvel[4] *= 0.85;   // roll damping
+      }
+      if (hasCmd && qpos && qvel && qpos.length >= 7) {
+        // World-frame heading: rotate body +x (head direction in
+        // flybody's MJCF) by the freejoint quaternion.
+        const qw = qpos[3], qx = qpos[4], qy = qpos[5], qz = qpos[6];
+        const fx = 1 - 2 * (qy * qy + qz * qz);
+        const fy = 2 * (qx * qy + qw * qz);
+        const v = 1.0 * this.fwdCmd;  // 1 cm/s per unit fwd command
+        qvel[0] = fx * v;
+        qvel[1] = fy * v;
+        qvel[5] = -this.turnCmd * 2.0 * Math.max(0.5, Math.sqrt(Math.abs(this.fwdCmd)));
       }
       this.mujoco.mj_step(this.model, this.data);
     }
@@ -335,6 +360,11 @@ export class Physics {
         ctrl[acts.adhesion] = w > 0.01 ? stancePhase : 1.0;
       }
     }
+
+    // Cache the kinematic command for step()'s substep loop. When walk
+    // is zero this is zero, so the body sits when the brain is silent.
+    this.fwdCmd = walkSigned;
+    this.turnCmd = tu;
   }
 
   /** Replace the live gait params with an evolved policy from

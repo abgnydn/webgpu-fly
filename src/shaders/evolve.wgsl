@@ -79,13 +79,20 @@ fn evaluate(@builtin(global_invocation_id) gid : vec3<u32>) {
       let lift = max(0.0, sin(lift_p)) * femur_amp;
 
       if (in_swing) {
-        // Swing: leg lifts, no thrust, slight energy cost from femur.
+        // Swing: leg lifts. Track lift quality — without it, the leg
+        // drags through the floor on the way back instead of swinging,
+        // which biomechanically means no thrust on the next stance.
         lifts_total = lifts_total + lift;
         energy = energy + femur_amp * femur_amp * 0.05;
       } else {
         // Stance: coxa retracts, body pushes off. Thrust ∝ amplitude
-        // × cos of phase (peak push at mid-stance) × tibia push × stride.
-        let push = coxa_amp * (-sp) * tibia_amp * stride_gain;
+        // × cos of phase × tibia push × stride. Crucially: GATED by
+        // femur lift quality. A leg that didn't lift during the prior
+        // swing is dragging — it still applies force, but in the wrong
+        // direction. min(1, femur_amp * 3) clamps the gate so any
+        // meaningful lift unlocks full thrust.
+        let lift_gate = min(1.0, femur_amp * 3.0);
+        let push = coxa_amp * (-sp) * tibia_amp * stride_gain * lift_gate;
         thrust = thrust + push;
         contact_quality = contact_quality + 1.0;
         energy = energy + (coxa_amp * coxa_amp + tibia_amp * tibia_amp) * 0.05;
