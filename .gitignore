@@ -13,6 +13,13 @@ data/*.tsv
 public/brain.bin
 public/brain.meta.json
 
+# Built spine blob — regenerable via tools/build_vnc.py
+public/vnc.bin
+public/vnc.meta.json
+
+# MANC raw downloads (Janelia public bucket; tools/download_manc.sh)
+data/manc/
+
 # flybody assets — vendored from TuragaLab/flybody main (149 MB)
 public/flybody/*.obj
 public/flybody/meshes.txt

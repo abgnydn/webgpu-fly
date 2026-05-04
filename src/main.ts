@@ -267,22 +267,99 @@ async function main() {
     }
   }
 
+  /**
+   * Run the real MANC spine: feed brain DN spike rates into the VNC's
+   * DN-input neurons, step the VNC LIF, return motor rates per leg+side.
+   * No-op (returns null) if vnc.bin wasn't loaded — caller falls back
+   * to the synthetic spine path.
+   */
+  async function runRealSpine(brainRate: Float32Array): Promise<Record<string, number> | null> {
+    if (!vncSim || !vncMeta) return null;
+    const N = vncSim.brain.header.numNeurons;
+    const ext = new Float32Array(N);
+    // Brain DN cell types match VNC DN cell types (same neurons,
+    // brain side has soma, VNC side has axon terminal). Average the
+    // brain's rate across each DN's L+R copies and write that into
+    // every VNC neuron sharing the same name.
+    for (const [name, brainIdxs] of Object.entries(famousDns)) {
+      const vncIdxs = vncMeta.dn_inputs[name];
+      if (!vncIdxs || vncIdxs.length === 0) continue;
+      let sum = 0;
+      for (const i of brainIdxs) sum += brainRate[i];
+      const meanBrain = brainIdxs.length ? sum / brainIdxs.length : 0;
+      // Gain so a 30 Hz brain DN rate (rate ~0.03 spikes/step at 1 kHz)
+      // depolarizes the VNC neuron by ~3 mV/step. Comfortable above
+      // threshold once the cascade adds in.
+      const drive = meanBrain * 30;
+      for (const idx of vncIdxs) ext[idx] = drive;
+    }
+    vncSim.setExternalInput(ext);
+    const vncRate = await vncSim.captureRollingRate(20);
+    // Aggregate motor neuron rates per leg+side.
+    const motor: Record<string, number> = {};
+    for (const [legKey, group] of Object.entries(vncMeta.motor)) {
+      let sum = 0;
+      for (const i of group.all) sum += vncRate[i];
+      motor[legKey] = group.all.length ? sum / group.all.length : 0;
+    }
+    return motor;
+  }
+
   let driveFwd = 0, driveTurn = 0; // smoothed
+  let lastSpineMode = "synthetic"; // tracked for the diagnostic readout
   // Build VNC stand-in context once; reused by every drive update.
   const vncCtx: MotorContext = {
     famousDns,
     dnLeft,
     dnRight,
   };
-  function applyDriveFromSnapshot(rate: Float32Array, visual?: { angle: number; area: number }) {
+  async function applyDriveFromSnapshot(rate: Float32Array, visual?: { angle: number; area: number }) {
     let sumC = 0;
     for (const i of centralIdxs) sumC += rate[i];
     const meanC = centralIdxs.length ? sumC / centralIdxs.length : 0;
     room.setEyeGlow(Math.min(1, meanC * 25));
 
-    const cmd = motorFromBrain(rate, { ...vncCtx, visual });
-    const targetFwd = Math.max(-1, Math.min(1, cmd.fwd));
-    const targetTurn = Math.max(-1, Math.min(1, cmd.turn));
+    // Try the real Janelia MANC spine first. Falls back to the synthetic
+    // 200-neuron VNC if vnc.bin wasn't loaded.
+    const realMotor = await runRealSpine(rate);
+    let targetFwd: number, targetTurn: number, jump: number;
+    // Always run the synthetic spine — it owns direction sign + jump
+    // detection. MANC contributes magnitude when its motor pools are
+    // actually firing (which depends on the DN's natural pathway
+    // strength in the connectome, not always strong on direct stim).
+    const fbCmd = motorFromBrain(rate, { ...vncCtx, visual });
+    let mancTotal = 0, mancAsym = 0;
+    if (realMotor) {
+      const leftKeys = ["T1_left", "T2_left", "T3_left"];
+      const rightKeys = ["T1_right", "T2_right", "T3_right"];
+      const meanOf = (ks: string[]) => {
+        let s = 0, n = 0;
+        for (const k of ks) if (k in realMotor) { s += realMotor[k]; n++; }
+        return n ? s / n : 0;
+      };
+      const meanL = meanOf(leftKeys);
+      const meanR = meanOf(rightKeys);
+      mancTotal = meanL + meanR;
+      mancAsym = meanR - meanL;
+    }
+    if (mancTotal > 0.001) {
+      // MANC is firing meaningfully — use its magnitude with synthetic
+      // direction sign. This is the "real spine takes over" mode.
+      lastSpineMode = "MANC";
+      const sign = fbCmd.fwd >= 0 ? 1 : -1;
+      targetFwd = sign * Math.min(1, mancTotal * 60);
+      targetTurn = Math.max(-1, Math.min(1, mancAsym * 80 + fbCmd.turn * 0.5));
+    } else {
+      // MANC silent (DN cascade didn't reach motor pools strongly):
+      // fall back to synthetic spine so the demo stays responsive.
+      lastSpineMode = realMotor ? "synthetic (MANC quiet)" : "synthetic";
+      targetFwd = Math.max(-1, Math.min(1, fbCmd.fwd));
+      targetTurn = Math.max(-1, Math.min(1, fbCmd.turn));
+    }
+    jump = fbCmd.jump;
+    if (visual && Number.isFinite(visual.angle) && visual.area > 0) {
+      targetTurn += visual.angle * 1.0;
+    }
 
     // Smoothing — exponential blend so gait feels less jittery.
     const alpha = 0.35;
@@ -290,9 +367,9 @@ async function main() {
     driveTurn = driveTurn + alpha * (targetTurn - driveTurn);
 
     room.setDrive(driveFwd, driveTurn);
-    if (cmd.jump > 0.5) room.jumpImpulse(cmd.jump);
+    if (jump > 0.5) room.jumpImpulse(jump);
 
-    driveReadout.textContent = `fwd ${driveFwd.toFixed(2)}  turn ${driveTurn.toFixed(2)}  jump=${cmd.jump.toFixed(2)}`;
+    driveReadout.textContent = `fwd ${driveFwd.toFixed(2)}  turn ${driveTurn.toFixed(2)}  jump=${jump.toFixed(2)}  spine=${lastSpineMode}`;
   }
   function decayDrive() {
     driveFwd  *= 0.85;
@@ -307,6 +384,28 @@ async function main() {
   }
   const sim = await FlySim.create(brain, { ...DEFAULT_PARAMS });
   log(`FlySim ready. dt=${sim.params.dtMs} ms  tau=${sim.params.tauMs} ms`);
+
+  // --- Real VNC (Janelia MANC connectome) ---------------------------------
+  // Optional: if public/vnc.bin is present, load the 23k-neuron Male
+  // Adult Nerve Cord connectome alongside the brain. Brain DN spike
+  // rates flow into VNC DN-input neurons, the VNC LIF runs, and motor
+  // neurons drive the leg actuators per leg + side.
+  // If vnc.bin is missing, the synthetic 200-neuron spine in vnc.ts
+  // remains the motor source — same code path, different controller.
+  let vncSim: FlySim | null = null;
+  let vncMeta: { dn_inputs: Record<string, number[]>; motor: Record<string, { all: number[] }>; num_neurons: number; num_edges: number } | null = null;
+  const vncUrl = import.meta.env.VITE_VNC_URL || "/vnc.bin";
+  const vncMetaUrl = import.meta.env.VITE_VNC_META_URL || "/vnc.meta.json";
+  try {
+    const vncBrain = await loadBrain(vncUrl);
+    const vncMetaResp = await fetch(vncMetaUrl);
+    vncMeta = await vncMetaResp.json();
+    vncSim = await FlySim.create(vncBrain, { ...DEFAULT_PARAMS });
+    log(`real VNC loaded: ${vncBrain.header.numNeurons.toLocaleString()} neurons, ${vncBrain.header.numEdges.toLocaleString()} edges (Janelia MANC)`, "ok");
+    log(`  ${Object.keys(vncMeta!.dn_inputs).length} DN types, ${Object.keys(vncMeta!.motor).length} leg groups`);
+  } catch (e) {
+    log(`real VNC unavailable (${(e as Error).message}); using synthetic spine`, "warn");
+  }
   log("");
 
   // --- Build stimulus buttons ---
@@ -472,7 +571,7 @@ async function main() {
     for (let s = 0; s < N_SNAPSHOTS; s++) {
       const rate = await sim.captureRollingRate(STEPS_PER_SNAPSHOT);
       viewer.pushSnapshot(rate);
-      applyDriveFromSnapshot(rate);
+      await applyDriveFromSnapshot(rate);
     }
     const elapsed = performance.now() - t0;
     const totalSteps = N_SNAPSHOTS * STEPS_PER_SNAPSHOT;
@@ -550,7 +649,7 @@ async function main() {
     for (let s = 0; s < N_SNAPSHOTS; s++) {
       const rate = await sim.captureRollingRate(STEPS_PER_SNAPSHOT);
       viewer.pushSnapshot(rate);
-      applyDriveFromSnapshot(rate);
+      await applyDriveFromSnapshot(rate);
     }
     const elapsed = performance.now() - t0;
     log(`${N_SNAPSHOTS * STEPS_PER_SNAPSHOT} steps in ${elapsed.toFixed(0)} ms`, "ok");
@@ -659,7 +758,7 @@ async function main() {
       viewer.pushSnapshot(rate);
       // Brain → VNC stand-in → body. Visual cue is plumbed in so the
       // closed loop tightens via the same path as the famous-DN buttons.
-      applyDriveFromSnapshot(rate, sample);
+      await applyDriveFromSnapshot(rate, sample);
 
       tick++;
       if (tick % 10 === 0) {
@@ -740,7 +839,7 @@ async function main() {
     for (let s = 0; s < N_SNAPSHOTS; s++) {
       const rate = await sim.captureRollingRate(STEPS_PER_SNAPSHOT);
       viewer.pushSnapshot(rate);
-      applyDriveFromSnapshot(rate);
+      await applyDriveFromSnapshot(rate);
     }
     const elapsed = performance.now() - t0;
     log(`${N_SNAPSHOTS * STEPS_PER_SNAPSHOT} steps in ${elapsed.toFixed(0)} ms`, "ok");

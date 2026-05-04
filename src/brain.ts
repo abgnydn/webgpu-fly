@@ -2,6 +2,7 @@
 // Format spec: tools/build_csr.py docstring (single source of truth).
 
 export const MAGIC = "WGFLYBRN";
+export const VNC_MAGIC = "WGFLYVNC";
 export const HEADER_BYTES = 64;
 export const NEURON_BYTES = 32;
 
@@ -43,8 +44,8 @@ export function parseBrain(buf: ArrayBuffer): Brain {
 
   // --- Header ---
   const magic = String.fromCharCode(...bytes.subarray(0, 8));
-  if (magic !== MAGIC) {
-    throw new Error(`bad magic: got "${magic}", expected "${MAGIC}"`);
+  if (magic !== MAGIC && magic !== VNC_MAGIC) {
+    throw new Error(`bad magic: got "${magic}", expected "${MAGIC}" or "${VNC_MAGIC}"`);
   }
   const version = dv.getUint32(8, true);
   const numNeurons = dv.getUint32(12, true);

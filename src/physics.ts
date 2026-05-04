@@ -242,11 +242,20 @@ export class Physics {
     );
   }
 
-  /** Step physics N times. No kinematic injection, no upright lock.
-   * The body is driven by leg/wing actuators only — if it falls over,
-   * it falls over. This is the honest physics path. */
+  /** Step physics N times. Body is driven by leg/wing actuators —
+   * no kinematic translation injection, no qpos rewriting. The only
+   * stabilizer is a soft pitch/roll angular damper that shrinks the
+   * freejoint's pitch and roll velocities each substep. This keeps
+   * the fly's heading from drifting off-axis (which would point the
+   * retina at the floor or sky), while still letting the body fall
+   * if it genuinely loses balance. */
   step(substeps = 1) {
     for (let s = 0; s < substeps; s++) {
+      const qvel = this.data.qvel as Float64Array;
+      if (qvel && qvel.length >= 6) {
+        qvel[3] *= 0.85;   // pitch damping
+        qvel[4] *= 0.85;   // roll damping
+      }
       this.mujoco.mj_step(this.model, this.data);
     }
   }
