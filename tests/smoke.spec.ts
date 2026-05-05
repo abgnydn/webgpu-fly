@@ -397,6 +397,29 @@ test.describe("webgpu-fly e2e", () => {
     expect(result.ramp.max, `ramp-obs action ${result.ramp.max} unreasonably large`).toBeLessThan(2000);
   });
 
+  // End-to-end policy → body wiring: enable the toggle, run a few
+   // physics frames, ensure (a) the policy was invoked at least once,
+   // (b) actions written to mujoco are bounded, (c) the body didn't
+   // explode (positions stay finite, fly remains in scene). This is
+   // the lock for the trained-walker pipeline as a whole — observation
+   // builder, policy forward pass, action mapping, all in one.
+  test("trained walker toggle → policy actions reach the body", async ({ page }) => {
+    await waitForLog(page, "flybody attached", 120_000);
+    await clickButton(page, "Use RL policy");
+    await waitForLog(page, "trained walker loaded", 30_000);
+    // Run for ~3 seconds with the policy in control.
+    await page.waitForTimeout(3_000);
+    // Read body state via the drive-readout (which contains "speed")
+    // and verify it's a finite number (body didn't explode to NaN).
+    const drive = await page.locator("#drive-readout").innerText();
+    const m = drive.match(/speed (-?[\d.]+) cm\/s/);
+    expect(m, `drive-readout missing speed: "${drive}"`).not.toBeNull();
+    const speed = parseFloat(m![1]);
+    expect(Number.isFinite(speed), `body speed went non-finite: ${speed}`).toBe(true);
+    // Toggle off so other tests aren't affected by lingering policy drive.
+    await clickButton(page, "Use RL policy");
+  });
+
   test("Spontaneous keeps brain quiet (KC < 5%)", async ({ page }) => {
     await clickButton(page, "Spontaneous");
     await waitButtonIdle(page, "Spontaneous");

@@ -7,6 +7,7 @@ import { Room, RETINA_FOV_RAD } from "./room";
 import { Physics } from "./physics";
 import { motorFromBrain, resetVnc, vncSnapshot, type MotorContext } from "./vnc";
 import { GaitEvolver } from "./evolution";
+import { loadWalkingPolicy, type WalkingPolicy } from "./walking-policy";
 
 const SUPER_CLASS = [
   "unknown", "sensory", "ascending", "intrinsic", "central",
@@ -581,6 +582,22 @@ async function main() {
   stimRow.parentElement?.appendChild(evoSection);
   buttons.push(evoBtn);
 
+  // --- Trained walker (Vaxenburg et al. 2025 RL policy) ---
+  const rlSection = document.createElement("div");
+  rlSection.style.marginTop = "10px";
+  const rlH = document.createElement("h2");
+  rlH.style.cssText = "margin: 0 0 6px 0; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: #6c7480";
+  rlH.textContent = "Trained walker";
+  rlSection.appendChild(rlH);
+  const rlBtn = document.createElement("button");
+  rlBtn.className = "stim-btn";
+  rlBtn.style.flex = "1 0 100%";
+  rlBtn.innerHTML = `<span class="label">Use RL policy (TuragaLab)</span><span class="hint">trained MLP, observation→59 actions</span>`;
+  rlSection.appendChild(rlBtn);
+  stimRow.parentElement?.appendChild(rlSection);
+  buttons.push(rlBtn);
+  // Toggle handler — wired below once we know the policy is ready.
+
   // --- Wire scrub + play + record ---
   const controls = document.getElementById("controls") as HTMLDivElement;
   const scrub = document.getElementById("scrub") as HTMLInputElement;
@@ -944,6 +961,53 @@ async function main() {
     buttons.forEach((b) => { b.disabled = false; });
     busy = false;
   });
+
+  // --- Trained-walker toggle: switch between hand-coded CPG (default)
+  // and the RL policy from Vaxenburg et al. 2025. The policy gets
+  // a 741-dim observation built from sensor + qpos + qvel + a 65-frame
+  // synthetic forward-walk reference trajectory, and writes 59 actions
+  // back into the leg + adhesion + head actuators each frame. ---
+  let trainedWalker: WalkingPolicy | null = null;
+  let trainedActiveTargetCmS = 0;          // 0 = OFF; >0 = active fwd speed
+  const obsScratch = new Float32Array(741);
+  rlBtn.addEventListener("click", async () => {
+    if (busy) return;
+    if (!physics) {
+      log("flybody not loaded yet; cannot enable trained walker", "warn");
+      return;
+    }
+    if (trainedActiveTargetCmS > 0) {
+      // Already on → toggle off, fall back to CPG.
+      trainedActiveTargetCmS = 0;
+      rlBtn.classList.remove("active");
+      log("trained walker: OFF (CPG resumes)", "ok");
+      return;
+    }
+    if (!trainedWalker) {
+      log("loading trained walking policy …");
+      try {
+        trainedWalker = await loadWalkingPolicy();
+        log(`trained walker loaded: ${trainedWalker.obsDim}-dim obs → ${trainedWalker.actDim}-dim action (Vaxenburg et al. 2025)`, "ok");
+      } catch (e) {
+        log(`policy load failed: ${(e as Error).message}`, "err");
+        return;
+      }
+    }
+    trainedActiveTargetCmS = 1.0;          // 1 cm/s nominal forward
+    rlBtn.classList.add("active");
+    log("trained walker: ON (target speed 1 cm/s forward)", "ok");
+  });
+
+  // Drive hook: the room's render loop calls drivePolicyTick() every
+  // physics frame. When the trained walker is active, build observation,
+  // run policy, write actions; otherwise leave the CPG alone.
+  (room as any).drivePolicyTick = () => {
+    if (trainedActiveTargetCmS <= 0 || !trainedWalker || !physics) return false;
+    physics.buildWalkingObservation(obsScratch, trainedActiveTargetCmS);
+    const actions = trainedWalker.act(obsScratch);
+    physics.applyTrainedWalkerActions(actions);
+    return true;
+  };
 
   // --- Click-to-stim: pulse a single neuron, watch the cascade ---
   async function runSingleNeuronStim(idx: number) {

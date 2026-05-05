@@ -187,9 +187,98 @@ export class Physics {
     }
 
     const goodLegs = Physics.LEG_KEYS.filter((k) => p.legActs[k].coxa >= 0).length;
-    onProgress?.(`flybody ready (${p.model.nbody} bodies, ${nmesh} meshes, wings=${p.wingActs ? "ok" : "missing"}, legs=${goodLegs}/6)`);
+
+    // Cache the 59 actuators the trained walking policy controls,
+    // in the order it expects (= flybody walk_imitation env's
+    // _get_actuators output). Inferred from MJCF declaration order:
+    // 3 head joints + 2 abdomen + 48 leg motors + 6 adhesion claws.
+    const walkingActuatorNames = [
+      "head_abduct", "head_twist", "head",
+      "abdomen_abduct", "abdomen",
+      "coxa_abduct_T1_left",  "coxa_twist_T1_left",  "coxa_T1_left",
+      "femur_twist_T1_left",  "femur_T1_left",       "tibia_T1_left",
+      "tarsus_T1_left",       "tarsus2_T1_left",
+      "coxa_abduct_T1_right", "coxa_twist_T1_right", "coxa_T1_right",
+      "femur_twist_T1_right", "femur_T1_right",      "tibia_T1_right",
+      "tarsus_T1_right",      "tarsus2_T1_right",
+      "coxa_abduct_T2_left",  "coxa_twist_T2_left",  "coxa_T2_left",
+      "femur_twist_T2_left",  "femur_T2_left",       "tibia_T2_left",
+      "tarsus_T2_left",       "tarsus2_T2_left",
+      "coxa_abduct_T2_right", "coxa_twist_T2_right", "coxa_T2_right",
+      "femur_twist_T2_right", "femur_T2_right",      "tibia_T2_right",
+      "tarsus_T2_right",      "tarsus2_T2_right",
+      "coxa_abduct_T3_left",  "coxa_twist_T3_left",  "coxa_T3_left",
+      "femur_twist_T3_left",  "femur_T3_left",       "tibia_T3_left",
+      "tarsus_T3_left",       "tarsus2_T3_left",
+      "coxa_abduct_T3_right", "coxa_twist_T3_right", "coxa_T3_right",
+      "femur_twist_T3_right", "femur_T3_right",      "tibia_T3_right",
+      "tarsus_T3_right",      "tarsus2_T3_right",
+      "adhere_claw_T1_left",  "adhere_claw_T1_right",
+      "adhere_claw_T2_left",  "adhere_claw_T2_right",
+      "adhere_claw_T3_left",  "adhere_claw_T3_right",
+    ];
+    p.walkingActuatorIds = walkingActuatorNames.map(id);
+    const goodWalk = p.walkingActuatorIds.filter((i) => i >= 0).length;
+    if (goodWalk !== 59) {
+      console.warn(`walking actuator lookup: ${goodWalk}/59 resolved`);
+    }
+
+    // Cache sensor adr + dim by name. dm_control wires up sensors with
+    // these exact names in flybody's MJCF.
+    const sId = (n: string) => p.mujoco.mj_name2id(p.model, p.mujoco.mjtObj.mjOBJ_SENSOR.value, n);
+    const sAdr = p.model.sensor_adr as Int32Array;
+    const sDim = p.model.sensor_dim as Int32Array;
+    const lookupSensor = (name: string): { adr: number; dim: number } | null => {
+      const i = sId(name);
+      if (i < 0) return null;
+      return { adr: sAdr[i], dim: sDim[i] };
+    };
+    p.sensorIdx = {
+      accel:  lookupSensor("accelerometer"),
+      gyro:   lookupSensor("gyro"),
+      vel:    lookupSensor("velocimeter"),
+      forces: ["force_tarsus_T1_left", "force_tarsus_T1_right",
+               "force_tarsus_T2_left", "force_tarsus_T2_right",
+               "force_tarsus_T3_left", "force_tarsus_T3_right"]
+              .map((n) => lookupSensor(n)),
+      touches: ["touch_claw_T1_left", "touch_claw_T1_right",
+                "touch_claw_T2_left", "touch_claw_T2_right",
+                "touch_claw_T3_left", "touch_claw_T3_right"]
+               .map((n) => lookupSensor(n)),
+    };
+
+    // Cache body IDs for the 7 appendages (6 tarsi + head) so the
+    // appendages_pos observable can read their xpos in egocentric
+    // (root-relative, root-rotated) frame.
+    const bId = (n: string) => p.mujoco.mj_name2id(p.model, p.mujoco.mjtObj.mjOBJ_BODY.value, n);
+    p.appendageBodyIds = [
+      "tarsus_T1_left", "tarsus_T1_right",
+      "tarsus_T2_left", "tarsus_T2_right",
+      "tarsus_T3_left", "tarsus_T3_right",
+      "head",
+    ].map(bId);
+    p.thoraxBodyId = bId("thorax");
+
+    onProgress?.(`flybody ready (${p.model.nbody} bodies, ${nmesh} meshes, wings=${p.wingActs ? "ok" : "missing"}, legs=${goodLegs}/6, walk-acts=${goodWalk}/59)`);
     return p;
   }
+
+  /** 59 actuator IDs the trained walking policy controls, in policy
+   * action-vector order. Filled in `create()`. */
+  walkingActuatorIds: number[] = [];
+  /** Sensor adr + dim cache used by the trained-walker observation
+   * builder. */
+  sensorIdx: {
+    accel: { adr: number; dim: number } | null;
+    gyro:  { adr: number; dim: number } | null;
+    vel:   { adr: number; dim: number } | null;
+    forces: ({ adr: number; dim: number } | null)[];
+    touches: ({ adr: number; dim: number } | null)[];
+  } = { accel: null, gyro: null, vel: null, forces: [], touches: [] };
+  /** Body IDs of the 7 appendages whose egocentric xpos forms the
+   * appendages_pos observable. */
+  appendageBodyIds: number[] = [];
+  thoraxBodyId = -1;
 
   /**
    * Drive the six wing actuators with flybody's canonical wing-beat
@@ -389,6 +478,173 @@ export class Physics {
     this.gait.tibiaAmp = g.tibiaAmp;
     this.gait.swingRatio = g.swingRatio;
     this.gait.liftOffset = g.liftOffset;
+  }
+
+  /**
+   * Build the 741-dim observation vector the trained walking policy
+   * expects from current mujoco_wasm state, in dm_control's
+   * alphabetical concat order. Ref trajectory is generated forward
+   * at the given target velocity (cm/s) for 65 frames at the env's
+   * 50 Hz tick.
+   *
+   * Caller fills the result into a Float32Array via the slot offsets
+   * in WALKING_OBS_LAYOUT (walking-policy.ts). This method writes
+   * directly into `obs` to avoid per-frame allocation.
+   */
+  buildWalkingObservation(obs: Float32Array, targetSpeedCmPerS: number): void {
+    if (obs.length !== 741) throw new Error(`obs length must be 741, got ${obs.length}`);
+    const data = this.data;
+    const sensordata = data.sensordata as Float32Array;
+    const qpos = data.qpos as Float64Array;
+    const qvel = data.qvel as Float64Array;
+    const act = data.act as Float64Array;
+    const xpos = data.xpos as Float64Array;
+    const xmat = data.xmat as Float64Array;
+
+    // ---- 0..2: accelerometer ------------------------------------------
+    let off = 0;
+    if (this.sensorIdx.accel) {
+      const { adr } = this.sensorIdx.accel;
+      obs[off + 0] = sensordata[adr + 0];
+      obs[off + 1] = sensordata[adr + 1];
+      obs[off + 2] = sensordata[adr + 2];
+    }
+    off += 3;
+    // ---- 3..61: actuator_activation (59) ------------------------------
+    for (let i = 0; i < 59; i++) {
+      const a = this.walkingActuatorIds[i];
+      // act[] is empty for stateless actuators; fall back to ctrl in
+      // that case so we always have a 59-dim history signal.
+      const v = (act && act.length > a && a >= 0) ? act[a] : 0;
+      obs[off + i] = v;
+    }
+    off += 59;
+    // ---- 62..82: appendages_pos (7×3 egocentric) ---------------------
+    if (this.thoraxBodyId >= 0) {
+      const tx = xpos[3 * this.thoraxBodyId + 0];
+      const ty = xpos[3 * this.thoraxBodyId + 1];
+      const tz = xpos[3 * this.thoraxBodyId + 2];
+      // Thorax world rotation matrix (3×3, row-major in xmat[9*body]).
+      const m = 9 * this.thoraxBodyId;
+      const r00 = xmat[m + 0], r01 = xmat[m + 1], r02 = xmat[m + 2];
+      const r10 = xmat[m + 3], r11 = xmat[m + 4], r12 = xmat[m + 5];
+      const r20 = xmat[m + 6], r21 = xmat[m + 7], r22 = xmat[m + 8];
+      for (let i = 0; i < 7; i++) {
+        const b = this.appendageBodyIds[i];
+        if (b < 0) { obs[off + 3 * i] = obs[off + 3 * i + 1] = obs[off + 3 * i + 2] = 0; continue; }
+        const dx = xpos[3 * b + 0] - tx;
+        const dy = xpos[3 * b + 1] - ty;
+        const dz = xpos[3 * b + 2] - tz;
+        // Rotate world delta into thorax frame: M^T · d.
+        obs[off + 3 * i + 0] = r00 * dx + r10 * dy + r20 * dz;
+        obs[off + 3 * i + 1] = r01 * dx + r11 * dy + r21 * dz;
+        obs[off + 3 * i + 2] = r02 * dx + r12 * dy + r22 * dz;
+      }
+    }
+    off += 21;
+    // ---- 83..100: force (6×3) ----------------------------------------
+    for (let i = 0; i < 6; i++) {
+      const s = this.sensorIdx.forces[i];
+      if (s) {
+        obs[off + 3 * i + 0] = sensordata[s.adr + 0];
+        obs[off + 3 * i + 1] = sensordata[s.adr + 1];
+        obs[off + 3 * i + 2] = sensordata[s.adr + 2];
+      }
+    }
+    off += 18;
+    // ---- 101..103: gyro ---------------------------------------------
+    if (this.sensorIdx.gyro) {
+      const { adr } = this.sensorIdx.gyro;
+      obs[off + 0] = sensordata[adr + 0];
+      obs[off + 1] = sensordata[adr + 1];
+      obs[off + 2] = sensordata[adr + 2];
+    }
+    off += 3;
+    // ---- 104..188: joints_pos (85) ----------------------------------
+    // qpos[0..6] is the freejoint (xyz + quat). Joint values start at 7.
+    // Walking policy expects 85 joint qpos values in MJCF declaration
+    // order. flybody has more than 85 joints total, but the walker
+    // env config likely truncates to walking-relevant (no wing/antenna).
+    for (let i = 0; i < 85; i++) {
+      obs[off + i] = qpos.length > 7 + i ? qpos[7 + i] : 0;
+    }
+    off += 85;
+    // ---- 189..273: joints_vel (85) ----------------------------------
+    for (let i = 0; i < 85; i++) {
+      obs[off + i] = qvel.length > 6 + i ? qvel[6 + i] : 0;
+    }
+    off += 85;
+    // ---- 274..468: ref_displacement (65×3) ---------------------------
+    // Synthetic forward trajectory: each future frame advances along
+    // the body's heading at targetSpeedCmPerS for 1/50 sec.
+    const dtFrame = 1 / 50;
+    const stepCm = targetSpeedCmPerS * dtFrame;
+    for (let f = 0; f < 65; f++) {
+      // Future frames in body-local frame: forward = +x, lateral = 0,
+      // vertical = 0. Reference is body-relative so heading rotation
+      // doesn't enter.
+      obs[off + 3 * f + 0] = (f + 1) * stepCm;
+      obs[off + 3 * f + 1] = 0;
+      obs[off + 3 * f + 2] = 0;
+    }
+    off += 195;
+    // ---- 469..728: ref_root_quat (65×4) ------------------------------
+    // Identity quaternion for each frame — fly doesn't rotate during
+    // straight walking. (qw, qx, qy, qz) order matches MJ.
+    for (let f = 0; f < 65; f++) {
+      obs[off + 4 * f + 0] = 1;
+      obs[off + 4 * f + 1] = 0;
+      obs[off + 4 * f + 2] = 0;
+      obs[off + 4 * f + 3] = 0;
+    }
+    off += 260;
+    // ---- 729..734: touch (6) -----------------------------------------
+    for (let i = 0; i < 6; i++) {
+      const s = this.sensorIdx.touches[i];
+      obs[off + i] = s ? sensordata[s.adr] : 0;
+    }
+    off += 6;
+    // ---- 735..737: velocimeter --------------------------------------
+    if (this.sensorIdx.vel) {
+      const { adr } = this.sensorIdx.vel;
+      obs[off + 0] = sensordata[adr + 0];
+      obs[off + 1] = sensordata[adr + 1];
+      obs[off + 2] = sensordata[adr + 2];
+    }
+    off += 3;
+    // ---- 738..740: world_zaxis (z-axis of world in body frame) ------
+    // Reading thorax xmat directly: the third COLUMN (entries 2, 5, 8)
+    // is the body-frame projection of world +z. Equivalent to "what
+    // direction does up point to in fly coords."
+    if (this.thoraxBodyId >= 0) {
+      const m = 9 * this.thoraxBodyId;
+      obs[off + 0] = xmat[m + 2];
+      obs[off + 1] = xmat[m + 5];
+      obs[off + 2] = xmat[m + 8];
+    }
+    off += 3;
+    if (off !== 741) throw new Error(`obs build went wrong: filled ${off} of 741 slots`);
+  }
+
+  /**
+   * Apply 59 actions from the trained walking policy to the
+   * corresponding 59 actuators. Caller is responsible for: (a) running
+   * the policy forward pass, (b) ensuring actions are bounded
+   * (the trained policy outputs roughly [-3, 3] mean for in-distribution
+   * obs; ctrl ranges in MJCF clamp anyway, but we cap to ±1 here as a
+   * safety net since OOD inputs can produce huge outputs).
+   */
+  applyTrainedWalkerActions(actions: Float32Array): void {
+    if (actions.length !== 59) throw new Error(`actions must be 59-dim, got ${actions.length}`);
+    const ctrl = this.data.ctrl as Float64Array;
+    for (let i = 0; i < 59; i++) {
+      const a = this.walkingActuatorIds[i];
+      if (a < 0) continue;
+      // Clamp to ±1 to absorb OOD spikes; the env's ctrl range
+      // (often narrower) clamps further.
+      const v = actions[i];
+      ctrl[a] = v > 1 ? 1 : v < -1 ? -1 : v;
+    }
   }
 
   /** Apply an instantaneous vertical impulse to the freejoint body —

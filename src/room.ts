@@ -615,23 +615,25 @@ export class Room {
         this.targetGlow.intensity = 4.5 * pulse;
       }
       if (this.physics && this.bodies.length) {
-        // Brain → VNC stand-in → body. Two motor primitives selected
-        // by DN drive: tripod walk gait (amplitude = forward) and
-        // wing-buzz hover (amplitude = remaining drive after walking).
-        // Preserve sign of forward so DNb01's moonwalker (negative
-        // forward) scoots backward. sqrt-on-magnitude boosts leg
-        // visibility at low drive without flipping direction.
-        const sign = this.forward < 0 ? -1 : 1;
-        const walkAmp = sign * Math.min(1, Math.sqrt(Math.abs(this.forward)));
-        this.physics.driveLegs(walkAmp, this.turn);
-        // Wings get a smaller buzz — secondary behavior unless the
-        // fly is "trying to fly" (idle freq buzz when active).
-        const buzz = Math.min(1, Math.abs(this.forward) * 0.5 + Math.abs(this.turn) * 0.3);
-        this.physics.driveWings(buzz, this.turn);
+        // External hook: if main.ts has the trained walker enabled,
+        // it builds an observation + writes 59 actions BEFORE the
+        // CPG fires. drivePolicyTick returns true if it took control
+        // for this frame; in that case skip the CPG.
+        const policyTook = (this as any).drivePolicyTick?.() ?? false;
+        if (!policyTook) {
+          // Brain → VNC stand-in → body. Two motor primitives selected
+          // by DN drive: tripod walk gait (amplitude = forward) and
+          // wing-buzz hover (amplitude = remaining drive after walking).
+          const sign = this.forward < 0 ? -1 : 1;
+          const walkAmp = sign * Math.min(1, Math.sqrt(Math.abs(this.forward)));
+          this.physics.driveLegs(walkAmp, this.turn);
+          const buzz = Math.min(1, Math.abs(this.forward) * 0.5 + Math.abs(this.turn) * 0.3);
+          this.physics.driveWings(buzz, this.turn);
+        }
 
         // flybody MJCF runs at dt=0.0001 s; cap sim per render frame
         // to keep frame budget sane. 32 substeps ≈ 3.2 ms simulated
-        // per render — enough to see wing flap without melting CPU.
+        // per render.
         this.physics.step(32);
         this.syncBodyTransforms();
         this.refreshRetina();
