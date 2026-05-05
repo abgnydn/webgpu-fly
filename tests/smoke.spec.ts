@@ -298,7 +298,11 @@ test.describe("webgpu-fly e2e", () => {
   test("trained walking policy loads + forward-passes", async ({ page }) => {
     await page.goto("/");
     const result = await page.evaluate(async () => {
-      const mod = await import("/src/walking-policy.ts");
+      // Use Vite's served path. The /* @vite-ignore */ keeps TS from
+      // trying to resolve this import at type-check time (it's a
+      // runtime browser-side fetch, not a TS module reference).
+      const modPath = "/src/walking-policy.ts";
+      const mod = await import(/* @vite-ignore */ modPath);
       const policy = await mod.loadWalkingPolicy("/walking-policy.bin");
       const obs = new Float32Array(policy.obsDim);
       // tiny non-zero perturbation so no-input optimization paths
