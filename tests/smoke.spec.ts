@@ -291,6 +291,37 @@ test.describe("webgpu-fly e2e", () => {
     expect(seenAtLeastOnce, `retina never saw target across ${ticks.length} ticks`).toBe(true);
   });
 
+  // Trained walking policy from TuragaLab/flybody (Vaxenburg et al.
+   // 2025) loads + runs a forward pass without exploding. This is the
+   // RL-driven body controller; once the observation pipeline is wired
+   // up, it replaces the kinematic assist for actually-actuated walking.
+  test("trained walking policy loads + forward-passes", async ({ page }) => {
+    await page.goto("/");
+    const result = await page.evaluate(async () => {
+      const mod = await import("/src/walking-policy.ts");
+      const policy = await mod.loadWalkingPolicy("/walking-policy.bin");
+      const obs = new Float32Array(policy.obsDim);
+      // tiny non-zero perturbation so no-input optimization paths
+      // don't hide bugs in the dense forward
+      for (let i = 0; i < obs.length; i++) obs[i] = (i % 7) * 0.01;
+      const a = policy.act(obs);
+      let nans = 0, max = 0;
+      for (let i = 0; i < a.length; i++) {
+        if (Number.isNaN(a[i])) nans++;
+        const x = Math.abs(a[i]);
+        if (x > max) max = x;
+      }
+      return { obsDim: policy.obsDim, actDim: policy.actDim, nans, max };
+    });
+    expect(result.obsDim).toBe(741);
+    expect(result.actDim).toBe(59);
+    expect(result.nans, "policy produced NaN actions").toBe(0);
+    // Action mean output isn't squashed, but should be in a sane
+    // range. Untrained noise produces ~3-5; trained on real data
+    // typically stays under 10.
+    expect(result.max, `action magnitude too high: ${result.max}`).toBeLessThan(20);
+  });
+
   test("Spontaneous keeps brain quiet (KC < 5%)", async ({ page }) => {
     await clickButton(page, "Spontaneous");
     await waitButtonIdle(page, "Spontaneous");

@@ -40,6 +40,7 @@ put "public/brain.bin"      "brain.bin"      "application/octet-stream"
 put "public/brain.meta.json" "brain.meta.json" "application/json"
 put "public/vnc.bin"        "vnc.bin"        "application/octet-stream"
 put "public/vnc.meta.json"  "vnc.meta.json"  "application/json"
+put "public/walking-policy.bin" "walking-policy.bin" "application/octet-stream"
 
 echo "uploading flybody MJCF + meshes …"
 for f in public/flybody/*.xml; do

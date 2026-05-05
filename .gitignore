@@ -20,6 +20,15 @@ public/vnc.meta.json
 # MANC raw downloads (Janelia public bucket; tools/download_manc.sh)
 data/manc/
 
+# Trained walking policy + raw flybody policy SavedModels.
+# Regen: download trained-fly-policies.zip from janelia.figshare,
+# unzip into data/flybody-policies/, run tools/extract_walking_policy.py.
+public/walking-policy.bin
+data/flybody-policies/
+
+# TF venv (1.4 GB; kept out of repo)
+.venv-tf/
+
 # flybody assets — vendored from TuragaLab/flybody main (149 MB)
 public/flybody/*.obj
 public/flybody/meshes.txt
