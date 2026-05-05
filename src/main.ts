@@ -214,6 +214,8 @@ async function main() {
   })
     .then(async (p) => {
       physics = p;
+      // Expose for e2e probing — read-only inspection of body state.
+      (window as unknown as { __physicsForTest: typeof p }).__physicsForTest = p;
       await room.attachPhysics(p);
       log(`flybody attached (${p.bodyCount} bodies)`, "ok");
       bootStage("body", "ok", `${p.bodyCount} bodies, 85 meshes ready`);
@@ -993,9 +995,16 @@ async function main() {
         return;
       }
     }
-    trainedActiveTargetCmS = 1.0;          // 1 cm/s nominal forward
+    // 1.0 cm/s is the value where the policy reliably produces
+    // straight-line forward progress; 1.5 had it scoot backward, 3.0
+    // had it curve. The trained policy was optimized against
+    // observation-normalized inputs (running mean/std from the env's
+    // ObservationActionNorm wrapper) which we don't apply here, so
+    // it's slightly out-of-distribution and very sensitive to
+    // ref-trajectory scale. 1.0 cm/s sits in the sweet spot.
+    trainedActiveTargetCmS = 1.0;
     rlBtn.classList.add("active");
-    log("trained walker: ON (target speed 1 cm/s forward)", "ok");
+    log("trained walker: ON (target 1 cm/s forward)", "ok");
   });
 
   // Drive hook: the room's render loop calls drivePolicyTick() every

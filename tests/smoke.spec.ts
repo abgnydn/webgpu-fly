@@ -405,19 +405,60 @@ test.describe("webgpu-fly e2e", () => {
    // builder, policy forward pass, action mapping, all in one.
   test("trained walker toggle → policy actions reach the body", async ({ page }) => {
     await waitForLog(page, "flybody attached", 120_000);
+
+    // Hook into the page to observe what the policy is actually producing.
+    // After enable, we'll snapshot policy action stats + body x-position
+    // before/after to assert net forward progress.
+    const result = await page.evaluate(async () => {
+      // Grab handles via the global `room` / `physics` if exposed; fall
+      // back to dynamic import probing.
+      const w = window as unknown as { __probe?: { startX: number; samples: { max: number; mean: number; nans: number }[] } };
+      w.__probe = { startX: NaN, samples: [] };
+      return true;
+    });
+    void result;
+
     await clickButton(page, "Use RL policy");
     await waitForLog(page, "trained walker loaded", 30_000);
-    // Run for ~3 seconds with the policy in control.
-    await page.waitForTimeout(3_000);
-    // Read body state via the drive-readout (which contains "speed")
-    // and verify it's a finite number (body didn't explode to NaN).
+
+    const before = await page.evaluate(() => {
+      const phys = (window as unknown as { __physicsForTest?: { data: { qpos: Float64Array } } }).__physicsForTest;
+      if (!phys) return null;
+      return { x: phys.data.qpos[0], y: phys.data.qpos[1], z: phys.data.qpos[2] };
+    });
+
+    await page.waitForTimeout(4_000);
+
+    const after = await page.evaluate(() => {
+      const phys = (window as unknown as { __physicsForTest?: { data: { qpos: Float64Array } } }).__physicsForTest;
+      if (!phys) return null;
+      return { x: phys.data.qpos[0], y: phys.data.qpos[1], z: phys.data.qpos[2] };
+    });
+
+    // Toggle off so subsequent tests start clean.
+    await clickButton(page, "Use RL policy");
+
     const drive = await page.locator("#drive-readout").innerText();
     const m = drive.match(/speed (-?[\d.]+) cm\/s/);
     expect(m, `drive-readout missing speed: "${drive}"`).not.toBeNull();
     const speed = parseFloat(m![1]);
     expect(Number.isFinite(speed), `body speed went non-finite: ${speed}`).toBe(true);
-    // Toggle off so other tests aren't affected by lingering policy drive.
-    await clickButton(page, "Use RL policy");
+
+    expect(before, "physics handle missing").not.toBeNull();
+    expect(after, "physics handle missing").not.toBeNull();
+    const dx = after!.x - before!.x;
+    const dy = after!.y - before!.y;
+    const dz = after!.z - before!.z;
+    console.log(`[rl-walker] before=(${before!.x.toFixed(3)},${before!.y.toFixed(3)},${before!.z.toFixed(3)}) after=(${after!.x.toFixed(3)},${after!.y.toFixed(3)},${after!.z.toFixed(3)}) dx=${dx.toFixed(3)} dy=${dy.toFixed(3)} dz=${dz.toFixed(3)}`);
+
+    // Forward progress: ref says "+x at 1 cm/s for 4s = 4 cm"; we
+    // require some non-trivial advance.
+    expect(dx, `body did not advance forward under RL (dx=${dx.toFixed(3)} cm)`).toBeGreaterThan(0.1);
+    // Lateral drift bounded — body shouldn't strafe sideways more than
+    // it walks forward.
+    expect(Math.abs(dy), `body strafed sideways (dy=${dy.toFixed(3)} cm)`).toBeLessThan(Math.abs(dx) + 1.0);
+    // Body should remain roughly upright (z within a centimeter of spawn).
+    expect(Math.abs(dz), `body z drifted (dz=${dz.toFixed(3)} cm)`).toBeLessThan(1.0);
   });
 
   test("Spontaneous keeps brain quiet (KC < 5%)", async ({ page }) => {
