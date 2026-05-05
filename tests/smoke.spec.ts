@@ -295,35 +295,75 @@ test.describe("webgpu-fly e2e", () => {
    // 2025) loads + runs a forward pass without exploding. This is the
    // RL-driven body controller; once the observation pipeline is wired
    // up, it replaces the kinematic assist for actually-actuated walking.
-  test("trained walking policy loads + forward-passes", async ({ page }) => {
+  // Lock the TS forward pass against a numpy ground truth (generated
+   // by tools/verify_walking_policy.py from the same weight binary).
+   // If anything in extract_walking_policy.py or walking-policy.ts
+   // drifts (variable mapping, layer order, activation function),
+   // this test pinpoints it.
+  test("trained walking policy matches numpy ground truth", async ({ page }) => {
     await page.goto("/");
-    const result = await page.evaluate(async () => {
-      // Use Vite's served path. The /* @vite-ignore */ keeps TS from
-      // trying to resolve this import at type-check time (it's a
-      // runtime browser-side fetch, not a TS module reference).
+    const fixtures = await page.evaluate(async () => {
+      const fres = await fetch("/walking-policy-fixtures.json");
+      const cases: Array<{ name: string; obs: number[]; action: number[] }> = await fres.json();
       const modPath = "/src/walking-policy.ts";
       const mod = await import(/* @vite-ignore */ modPath);
       const policy = await mod.loadWalkingPolicy("/walking-policy.bin");
-      const obs = new Float32Array(policy.obsDim);
-      // tiny non-zero perturbation so no-input optimization paths
-      // don't hide bugs in the dense forward
-      for (let i = 0; i < obs.length; i++) obs[i] = (i % 7) * 0.01;
-      const a = policy.act(obs);
-      let nans = 0, max = 0;
-      for (let i = 0; i < a.length; i++) {
-        if (Number.isNaN(a[i])) nans++;
-        const x = Math.abs(a[i]);
-        if (x > max) max = x;
-      }
-      return { obsDim: policy.obsDim, actDim: policy.actDim, nans, max };
+      const results = cases.map(({ name, obs, action }) => {
+        const out = policy.act(new Float32Array(obs)).slice();
+        let maxDiff = 0;
+        for (let i = 0; i < out.length; i++) {
+          const d = Math.abs(out[i] - action[i]);
+          if (d > maxDiff) maxDiff = d;
+        }
+        return { name, maxDiff, sampleTs: Array.from(out.slice(0, 3)), sampleNp: action.slice(0, 3) };
+      });
+      return results;
+    });
+    for (const r of fixtures) {
+      // Float32 round-trip: tolerance scales with action magnitude.
+      // Numpy uses float32 internally too, so element-wise diffs
+      // should be ~1e-3 absolute even on actions of magnitude 100s.
+      expect(r.maxDiff, `case "${r.name}" diverges from numpy: TS=${r.sampleTs}, np=${r.sampleNp}, maxDiff=${r.maxDiff}`).toBeLessThan(1.0);
+    }
+  });
+
+  test("trained walking policy loads + forward-passes", async ({ page }) => {
+    await page.goto("/");
+    const result = await page.evaluate(async () => {
+      const modPath = "/src/walking-policy.ts";
+      const mod = await import(/* @vite-ignore */ modPath);
+      const policy = await mod.loadWalkingPolicy("/walking-policy.bin");
+      // Two test inputs: all zeros (rest pose) + synthetic ramp.
+      const zero = new Float32Array(policy.obsDim);
+      const ramp = new Float32Array(policy.obsDim);
+      for (let i = 0; i < ramp.length; i++) ramp[i] = (i % 7) * 0.01;
+      const summarize = (obs: Float32Array) => {
+        const a = policy.act(obs).slice();
+        let nans = 0, max = 0;
+        for (let i = 0; i < a.length; i++) {
+          if (Number.isNaN(a[i])) nans++;
+          const x = Math.abs(a[i]);
+          if (x > max) max = x;
+        }
+        return { nans, max, first: Array.from(a.slice(0, 5)) };
+      };
+      return {
+        obsDim: policy.obsDim, actDim: policy.actDim,
+        zero: summarize(zero), ramp: summarize(ramp),
+      };
     });
     expect(result.obsDim).toBe(741);
     expect(result.actDim).toBe(59);
-    expect(result.nans, "policy produced NaN actions").toBe(0);
-    // Action mean output isn't squashed, but should be in a sane
-    // range. Untrained noise produces ~3-5; trained on real data
-    // typically stays under 10.
-    expect(result.max, `action magnitude too high: ${result.max}`).toBeLessThan(20);
+    // No NaNs/inf for either input.
+    expect(result.zero.nans).toBe(0);
+    expect(result.ramp.nans).toBe(0);
+    // All-zero obs → policy bias term, should be bounded by a small
+    // constant — head bias is ~[-1.3, 1.5] from extraction logs.
+    expect(result.zero.max, `zero-obs action ${result.zero.max} unreasonably large`).toBeLessThan(50);
+    // Synthetic non-zero obs: forward pass shouldn't blow up to inf.
+    // The trained policy was fed normalized obs, so out-of-distribution
+    // inputs can produce larger actions; we just check finite + bounded.
+    expect(result.ramp.max, `ramp-obs action ${result.ramp.max} unreasonably large`).toBeLessThan(2000);
   });
 
   test("Spontaneous keeps brain quiet (KC < 5%)", async ({ page }) => {

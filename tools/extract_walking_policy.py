@@ -101,36 +101,36 @@ for i in sorted(variables.keys()):
 # the first one is exposed here (acme's LayerNormMLP only does LN on
 # layer 1; subsequent are plain Dense+tanh).
 
-# Final layout assumption (LayerNormMLP + GaussianMixtureHead-ish):
-#   layer  | weight idx | bias idx | extra (LN scale, LN bias)
-#   1      | v1         | v2       | LN: scale=v3, bias=v0     ← LayerNorm only on layer 1
-#   2      | v5         | v6       |
-#   3      | v7         | v8       |
-#   4      | v9         | v?       | bias missing? maybe v4 is it
-#   head   | v11        | v10 (?)  |   59-d action mean
-#   stddev | v13        | v12 (?)  |   unused at inference
-#
-# Let me try v4 as Dense4.b — but v4 is [512], same shape as needed.
+# Acme Sonnet checkpoint ordering: variables sorted lexically by their
+# leaf attribute name within each submodule, traversed in module
+# creation order. For LayerNormMLP wrapped in MultivariateNormalDiagHead:
+#   submod 0: Linear1   → b (v0), w (v1)              [b < w alphabetically]
+#   submod 1: LayerNorm → offset (v2), scale (v3)     [offset < scale]
+#   submod 2: Linear2   → b (v4), w (v5)
+#   submod 3: Linear3   → b (v6), w (v7)
+#   submod 4: Linear4   → b (v8), w (v9)
+#   submod 5: mean      → b (v10), w (v11)
+#   submod 6: scale     → b (v12), w (v13)            [stddev — unused]
+# All shapes confirm against this layout.
 
-# Pack everything into a single bin in a known order:
 def pack(*arrays):
     out = bytearray()
     for a in arrays:
         out += a.astype(np.float32).tobytes()
     return out
 
-ln_bias  = variables[0][1]          # [512]  layernorm bias
-ln_scale = variables[3][1]          # [512]  layernorm scale
-d1_w     = variables[1][1]          # [741, 512]
-d1_b     = variables[2][1]          # [512]
-d2_w     = variables[5][1]          # [512, 512]
-d2_b     = variables[6][1]          # [512]
-d3_w     = variables[7][1]          # [512, 512]
-d3_b     = variables[8][1]          # [512]
-d4_w     = variables[9][1]          # [512, 512]
-d4_b     = variables[4][1]          # [512]   — guessed
-head_w   = variables[11][1]         # [512, 59] action mean
-head_b   = variables[10][1]         # [59]
+d1_b     = variables[0][1]          # [512]      Linear1.b
+d1_w     = variables[1][1]          # [741, 512] Linear1.w
+ln_bias  = variables[2][1]          # [512]      LN.offset
+ln_scale = variables[3][1]          # [512]      LN.scale
+d2_b     = variables[4][1]          # [512]      Linear2.b
+d2_w     = variables[5][1]          # [512, 512] Linear2.w
+d3_b     = variables[6][1]          # [512]      Linear3.b
+d3_w     = variables[7][1]          # [512, 512] Linear3.w
+d4_b     = variables[8][1]          # [512]      Linear4.b
+d4_w     = variables[9][1]          # [512, 512] Linear4.w
+head_b   = variables[10][1]         # [59]       mean.b
+head_w   = variables[11][1]         # [512, 59]  mean.w
 
 OBS_DIM   = d1_w.shape[0]
 HIDDEN    = d1_w.shape[1]

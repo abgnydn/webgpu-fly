@@ -5,16 +5,16 @@
 // fruit fly locomotion"). 4.8 MB of float32 weights, ~3 MB of which
 // is the input layer (741 obs × 512 hidden).
 //
-// Architecture (after `tools/extract_walking_policy.py`):
-//   obs[741] → Dense(512) → LayerNorm → tanh
-//           → Dense(512) → tanh
-//           → Dense(512) → tanh
-//           → Dense(512) → tanh
-//           → Dense(59)              ← action mean (deterministic)
+// Architecture (Acme LayerNormMLP + MultivariateNormalDiagHead, mean
+// only at inference):
+//   obs[741] → Linear(512) → LayerNorm → tanh
+//           → Linear(512) → ELU
+//           → Linear(512) → ELU
+//           → Linear(512) → ELU      (activate_final=True)
+//           → Linear(59)             ← action mean (deterministic)
 //
-// LayerNorm only on the first hidden layer (Acme's LayerNormMLP
-// convention — keeps activations sane after the high-dim input
-// projection).
+// LayerNorm only on the first hidden layer; subsequent layers use
+// ELU (Acme default for the trailing snt.MLP block).
 //
 // What this module DOES:
 //   - Load the binary, parse header, slice weight buffers.
@@ -128,6 +128,12 @@ export async function loadWalkingPolicy(
     for (let i = 0; i < x.length; i++) x[i] = Math.tanh(x[i]);
   }
 
+  function elu(x: Float32Array) {
+    for (let i = 0; i < x.length; i++) {
+      x[i] = x[i] > 0 ? x[i] : Math.expm1(x[i]);
+    }
+  }
+
   const action = new Float32Array(actDim);
 
   function act(obs: Float32Array, out: Float32Array = action): Float32Array {
@@ -138,12 +144,12 @@ export async function loadWalkingPolicy(
     dense(obs, denseW[0], denseB[0], h, obsDim, hidden);
     layerNorm(h, lnScale, lnBias);
     tanh(h);
-    // Layers 2..nLayers: hidden → hidden, tanh
+    // Layers 2..nLayers: hidden → hidden, ELU (Acme LayerNormMLP default)
     let cur = h;
     let nxt = h2;
     for (let l = 1; l < nLayers; l++) {
       dense(cur, denseW[l], denseB[l], nxt, hidden, hidden);
-      tanh(nxt);
+      elu(nxt);
       [cur, nxt] = [nxt, cur];
     }
     // Output head: hidden → actDim (no activation — action mean)
