@@ -320,11 +320,16 @@ def main() -> int:
         "DNp52": "forward walking — Dallmann walking circuit (2026)",
         "DNg13": "turning",
         "MDN":   "moonwalking (backward) command — Bidaye et al.",
+        "RRN":   "forward walking — Roadrunner neurons (Dallmann 2026); cell_type CB0257",
     }
+    # Some labels (RRN) differ from the FlyWire cell_type. Map them so
+    # the lookup uses the right column value.
+    label_to_cell_type = {"RRN": "CB0257"}
     cell_type_col = ann["cell_type"] if "cell_type" in ann.columns else None
     if cell_type_col is not None:
         for label in famous_labels:
-            mask = cell_type_col == label
+            ct = label_to_cell_type.get(label, label)
+            mask = cell_type_col == ct
             if not mask.any():
                 continue
             root_ids_for_label = ann[mask].index.to_numpy()
@@ -335,6 +340,32 @@ def main() -> int:
             ]
             if idxs:
                 famous_dns[label] = idxs
+
+    # Walking-circuit DN catalog from Dallmann et al. 2026 (supp fig 2c):
+    # 21 cell types in two clusters downstream of RRN+BPN. Saved as a
+    # cell_type → indices map under brain.meta.json["walking_circuit_dns"]
+    # for use by future "fire the whole pathway" presets / visualizations.
+    walking_circuit_cell_types = (
+        # Leg cluster (project to leg neuropils, ~71% of output)
+        "DNp52", "DNg101", "DNg102", "DNp64", "DNge050", "DNd05",
+        "DNge048", "DNa45", "DNge082", "DNpe020", "DNg44", "DNge103",
+        # LTct cluster (project to lower tectulum, ~31% of output)
+        "DNpe053", "DNp13", "DNp42", "DNge150", "DNp68", "DNp69",
+        "DNpe042", "DNp45", "DNp55",
+    )
+    walking_circuit_dns: dict[str, list[int]] = {}
+    if cell_type_col is not None:
+        for ct in walking_circuit_cell_types:
+            mask = cell_type_col == ct
+            if not mask.any():
+                continue
+            idxs = [
+                int(id_to_idx[int(r)])
+                for r in ann[mask].index.to_numpy()
+                if int(r) in id_to_idx
+            ]
+            if idxs:
+                walking_circuit_dns[ct] = idxs
 
     meta = {
         "version": 1,
@@ -351,6 +382,7 @@ def main() -> int:
         "hero_cell_types": HERO_CELL_TYPES,
         "famous_dns": famous_dns,
         "famous_dn_descriptions": famous_labels,
+        "walking_circuit_dns": walking_circuit_dns,
     }
     OUT_META.write_text(json.dumps(meta, indent=2))
     print(f"      {OUT_META.name} written")

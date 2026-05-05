@@ -524,11 +524,17 @@ async function main() {
     dnSection.appendChild(dnRow);
     stimRow.parentElement?.appendChild(dnSection);
 
+    // Some buttons use a paper-given name (RRN) while the FlyWire
+    // annotation uses a different cell_type code (CB0257). Map them
+    // for the Codex deep-link so the ↗ icon goes to the right cell.
+    const codexAlias: Record<string, string> = { RRN: "CB0257" };
+
     for (const [name, idxs] of Object.entries(famousDns)) {
       const btn = document.createElement("button");
       btn.className = "stim-btn";
       btn.style.position = "relative";
       const desc = famousDnLabels[name] ?? "";
+      const codexName = codexAlias[name] ?? name;
       // The ↗ link opens FlyWire Codex at this cell type, where the
       // user can browse the actual EM-traced neuron — both hemispheres,
       // synapse partners, neuropil maps. We use stopPropagation so the
@@ -536,7 +542,7 @@ async function main() {
       btn.innerHTML = `
         <span class="label">${name}</span>
         <span class="hint">${desc}</span>
-        <a class="ext-link" href="https://codex.flywire.ai/app/cell_details?cell_names_or_id=${encodeURIComponent(name)}" target="_blank" rel="noopener" title="open in FlyWire Codex">↗</a>
+        <a class="ext-link" href="https://codex.flywire.ai/app/cell_details?cell_names_or_id=${encodeURIComponent(codexName)}" target="_blank" rel="noopener" title="open in FlyWire Codex">↗</a>
       `;
       const link = btn.querySelector(".ext-link") as HTMLAnchorElement;
       link.addEventListener("click", (e) => e.stopPropagation());

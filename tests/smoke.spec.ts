@@ -123,6 +123,32 @@ test.describe("webgpu-fly e2e", () => {
     expect(log).toMatch(/--- DN stim: MDN/);
   });
 
+  // RRN is the central-brain forward-walking command pair (cell_type
+  // CB0257) identified by Dallmann et al. 2026. Stimming RRN should
+  // (a) cause a substantial brain-wide cascade, and (b) produce a net
+  // forward motor command — the connectome's wiring tells the rest of
+  // the story (RRN → 21 walking-circuit DNs → premotor → legs).
+  test("RRN button cascades and drives forward motor", async ({ page }) => {
+    const btn = page.locator(`.stim-btn:has(.label:has-text("RRN"))`).first();
+    await expect(btn, "RRN famous-DN button missing").toBeVisible({ timeout: 30_000 });
+    await clickButton(page, "RRN");
+    await waitButtonIdle(page, "RRN");
+    const log = await logText(page);
+    expect(log, "RRN stim block missing").toMatch(/--- DN stim: RRN/);
+    // Cascade should reach a non-trivial subset of the brain (not just
+    // the 2 stimmed cells). Pull the recruits count from the RRN block.
+    const idx = log.lastIndexOf("--- DN stim: RRN");
+    const slice = log.slice(idx);
+    const recruits = slice.match(/final-window recruits:\s*([\d,]+)/);
+    expect(recruits, "RRN recruits line missing").not.toBeNull();
+    const n = parseInt(recruits![1].replace(/,/g, ""), 10);
+    expect(n, `RRN cascade too small: ${n}`).toBeGreaterThan(50);
+    // Motor command should be net forward (RRN drives forward walking).
+    const fwd = extractNumber(slice, /brain-driven motor: fwd=(-?[\d.]+)/);
+    expect(fwd, "RRN motor line missing").not.toBeNull();
+    expect(fwd!, `RRN should drive forward (fwd>0), got ${fwd}`).toBeGreaterThan(0);
+  });
+
   // DNa01 / DNa02 / DNb01 are bilateral straight-walking commands —
   // their motor command should be mostly fwd, very little turn. If
   // the spine produces a strong turn signal from these symmetric
