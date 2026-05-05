@@ -188,11 +188,64 @@ export class Physics {
 
     const goodLegs = Physics.LEG_KEYS.filter((k) => p.legActs[k].coxa >= 0).length;
 
-    // Cache the 59 actuators the trained walking policy controls,
-    // in the order it expects (= flybody walk_imitation env's
-    // _get_actuators output). Inferred from MJCF declaration order:
-    // 3 head joints + 2 abdomen + 48 leg motors + 6 adhesion claws.
-    const walkingActuatorNames = [
+    // The trained policy outputs 59 actions in flybody's _ACTION_CLASSES
+    // order: adhesion → head → mouth → antennae → wings → abdomen → legs.
+    // For the walk_imitation env (mouth/antennae/wings disabled), this
+    // collapses to: 6 adhesion + 3 head + 2 abdomen + 48 legs = 59.
+    // Cross-checked against env.action_spec() ranges from a live
+    // flybody.tasks.base.Walking instantiation (tools/dump_flybody_spec.py).
+    const walkingActionNames = [
+      // 0..5: adhesion claws (ctrlrange [0, 1])
+      "adhere_claw_T1_left",  "adhere_claw_T1_right",
+      "adhere_claw_T2_left",  "adhere_claw_T2_right",
+      "adhere_claw_T3_left",  "adhere_claw_T3_right",
+      // 6..8: head
+      "head_abduct", "head_twist", "head",
+      // 9..10: abdomen
+      "abdomen_abduct", "abdomen",
+      // 11..58: 6 legs × 8 motors each (T1L, T1R, T2L, T2R, T3L, T3R)
+      "coxa_abduct_T1_left",  "coxa_twist_T1_left",  "coxa_T1_left",
+      "femur_twist_T1_left",  "femur_T1_left",       "tibia_T1_left",
+      "tarsus_T1_left",       "tarsus2_T1_left",
+      "coxa_abduct_T1_right", "coxa_twist_T1_right", "coxa_T1_right",
+      "femur_twist_T1_right", "femur_T1_right",      "tibia_T1_right",
+      "tarsus_T1_right",      "tarsus2_T1_right",
+      "coxa_abduct_T2_left",  "coxa_twist_T2_left",  "coxa_T2_left",
+      "femur_twist_T2_left",  "femur_T2_left",       "tibia_T2_left",
+      "tarsus_T2_left",       "tarsus2_T2_left",
+      "coxa_abduct_T2_right", "coxa_twist_T2_right", "coxa_T2_right",
+      "femur_twist_T2_right", "femur_T2_right",      "tibia_T2_right",
+      "tarsus_T2_right",      "tarsus2_T2_right",
+      "coxa_abduct_T3_left",  "coxa_twist_T3_left",  "coxa_T3_left",
+      "femur_twist_T3_left",  "femur_T3_left",       "tibia_T3_left",
+      "tarsus_T3_left",       "tarsus2_T3_left",
+      "coxa_abduct_T3_right", "coxa_twist_T3_right", "coxa_T3_right",
+      "femur_twist_T3_right", "femur_T3_right",      "tibia_T3_right",
+      "tarsus_T3_right",      "tarsus2_T3_right",
+    ];
+    p.walkingActuatorIds = walkingActionNames.map(id);
+    // Per-actuator ctrlrange used to invert CanonicalSpecWrapper at
+    // runtime. The trained policy emits an unbounded mean; Acme's
+    // CanonicalSpec wraps it by tanh→[-1,1], then linearly remaps to
+    // [lo, hi] of each actuator's ctrlrange. We bake that linear map
+    // into mid+half * tanh(action[i]).
+    const ctrlRange = p.model.actuator_ctrlrange as Float64Array;
+    p.walkingActuatorMid = new Float32Array(59);
+    p.walkingActuatorHalf = new Float32Array(59);
+    for (let i = 0; i < 59; i++) {
+      const a = p.walkingActuatorIds[i];
+      if (a < 0) continue;
+      const lo = ctrlRange[2 * a + 0];
+      const hi = ctrlRange[2 * a + 1];
+      p.walkingActuatorMid[i] = 0.5 * (lo + hi);
+      p.walkingActuatorHalf[i] = 0.5 * (hi - lo);
+    }
+    // Separate ordering for the actuator_activation observable, which
+    // dm_control fills in MJCF actuator declaration order via
+    // observable.MJCFFeature('act', model.find_all('actuator')) — this
+    // is a different order than the action vector (no adhesion-first).
+    const walkingActivationNames = [
+      // MJCF declaration order: 3 head, 2 abdomen, 48 leg, 6 adhesion
       "head_abduct", "head_twist", "head",
       "abdomen_abduct", "abdomen",
       "coxa_abduct_T1_left",  "coxa_twist_T1_left",  "coxa_T1_left",
@@ -217,11 +270,70 @@ export class Physics {
       "adhere_claw_T2_left",  "adhere_claw_T2_right",
       "adhere_claw_T3_left",  "adhere_claw_T3_right",
     ];
-    p.walkingActuatorIds = walkingActuatorNames.map(id);
+    p.walkingActivationIds = walkingActivationNames.map(id);
     const goodWalk = p.walkingActuatorIds.filter((i) => i >= 0).length;
     if (goodWalk !== 59) {
       console.warn(`walking actuator lookup: ${goodWalk}/59 resolved`);
     }
+
+    // The 85 joints feeding joints_pos / joints_vel observables, in the
+    // order returned by walker.observables.joints_pos._mjcf_element. Their
+    // qpos addresses are NOT contiguous in the model — there are gaps for
+    // rostrum/haustellum/labrum/antennae/wings — so we resolve each by
+    // jnt_qposadr / jnt_dofadr. Source: tools/dump_flybody_spec.py.
+    const walkingJointNames = [
+      "head_abduct", "head_twist", "head",
+      "abdomen_abduct", "abdomen",
+      "abdomen_abduct_2", "abdomen_2",
+      "abdomen_abduct_3", "abdomen_3",
+      "abdomen_abduct_4", "abdomen_4",
+      "abdomen_abduct_5", "abdomen_5",
+      "abdomen_abduct_6", "abdomen_6",
+      "abdomen_abduct_7", "abdomen_7",
+      "haltere_left", "haltere_right",
+      "coxa_abduct_T1_left",  "coxa_twist_T1_left",  "coxa_T1_left",
+      "femur_twist_T1_left",  "femur_T1_left",       "tibia_T1_left",
+      "tarsus_T1_left",       "tarsus2_T1_left",
+      "tarsus3_T1_left",      "tarsus4_T1_left",     "tarsus5_T1_left",
+      "coxa_abduct_T1_right", "coxa_twist_T1_right", "coxa_T1_right",
+      "femur_twist_T1_right", "femur_T1_right",      "tibia_T1_right",
+      "tarsus_T1_right",      "tarsus2_T1_right",
+      "tarsus3_T1_right",     "tarsus4_T1_right",    "tarsus5_T1_right",
+      "coxa_abduct_T2_left",  "coxa_twist_T2_left",  "coxa_T2_left",
+      "femur_twist_T2_left",  "femur_T2_left",       "tibia_T2_left",
+      "tarsus_T2_left",       "tarsus2_T2_left",
+      "tarsus3_T2_left",      "tarsus4_T2_left",     "tarsus5_T2_left",
+      "coxa_abduct_T2_right", "coxa_twist_T2_right", "coxa_T2_right",
+      "femur_twist_T2_right", "femur_T2_right",      "tibia_T2_right",
+      "tarsus_T2_right",      "tarsus2_T2_right",
+      "tarsus3_T2_right",     "tarsus4_T2_right",    "tarsus5_T2_right",
+      "coxa_abduct_T3_left",  "coxa_twist_T3_left",  "coxa_T3_left",
+      "femur_twist_T3_left",  "femur_T3_left",       "tibia_T3_left",
+      "tarsus_T3_left",       "tarsus2_T3_left",
+      "tarsus3_T3_left",      "tarsus4_T3_left",     "tarsus5_T3_left",
+      "coxa_abduct_T3_right", "coxa_twist_T3_right", "coxa_T3_right",
+      "femur_twist_T3_right", "femur_T3_right",      "tibia_T3_right",
+      "tarsus_T3_right",      "tarsus2_T3_right",
+      "tarsus3_T3_right",     "tarsus4_T3_right",    "tarsus5_T3_right",
+    ];
+    const jId = (n: string) => p.mujoco.mj_name2id(p.model, p.mujoco.mjtObj.mjOBJ_JOINT.value, n);
+    const jntQposAdr = p.model.jnt_qposadr as Int32Array;
+    const jntDofAdr = p.model.jnt_dofadr as Int32Array;
+    p.walkingQposAdr = new Int32Array(85);
+    p.walkingDofAdr = new Int32Array(85);
+    let goodJ = 0;
+    for (let i = 0; i < 85; i++) {
+      const j = jId(walkingJointNames[i]);
+      if (j >= 0) {
+        p.walkingQposAdr[i] = jntQposAdr[j];
+        p.walkingDofAdr[i] = jntDofAdr[j];
+        goodJ++;
+      } else {
+        p.walkingQposAdr[i] = -1;
+        p.walkingDofAdr[i] = -1;
+      }
+    }
+    if (goodJ !== 85) console.warn(`walking joint lookup: ${goodJ}/85 resolved`);
 
     // Cache sensor adr + dim by name. dm_control wires up sensors with
     // these exact names in flybody's MJCF.
@@ -247,25 +359,40 @@ export class Physics {
                .map((n) => lookupSensor(n)),
     };
 
-    // Cache body IDs for the 7 appendages (6 tarsi + head) so the
-    // appendages_pos observable can read their xpos in egocentric
-    // (root-relative, root-rotated) frame.
+    // appendages_pos observable in flybody is built from 7 SITES (the
+    // claw tips of the 6 legs plus a head site), read in egocentric
+    // frame (thorax-relative, thorax-rotated). We were previously
+    // reading body xpos from the proximal tarsus body, which is the
+    // wrong attachment point and gives the policy an OOD signal.
+    const siteId = (n: string) => p.mujoco.mj_name2id(p.model, p.mujoco.mjtObj.mjOBJ_SITE.value, n);
     const bId = (n: string) => p.mujoco.mj_name2id(p.model, p.mujoco.mjtObj.mjOBJ_BODY.value, n);
-    p.appendageBodyIds = [
-      "tarsus_T1_left", "tarsus_T1_right",
-      "tarsus_T2_left", "tarsus_T2_right",
-      "tarsus_T3_left", "tarsus_T3_right",
+    p.appendageSiteIds = [
+      "claw_T1_left", "claw_T1_right",
+      "claw_T2_left", "claw_T2_right",
+      "claw_T3_left", "claw_T3_right",
       "head",
-    ].map(bId);
+    ].map(siteId);
     p.thoraxBodyId = bId("thorax");
 
     onProgress?.(`flybody ready (${p.model.nbody} bodies, ${nmesh} meshes, wings=${p.wingActs ? "ok" : "missing"}, legs=${goodLegs}/6, walk-acts=${goodWalk}/59)`);
     return p;
   }
 
-  /** 59 actuator IDs the trained walking policy controls, in policy
-   * action-vector order. Filled in `create()`. */
+  /** 59 actuator IDs in policy ACTION order (adhesion-first). Used
+   * for writing ctrl values. Filled in `create()`. */
   walkingActuatorIds: number[] = [];
+  /** Per-action mid + half so we can apply the inverse of Acme's
+   * CanonicalSpecWrapper: ctrl[a] = mid + tanh(action) * half. */
+  walkingActuatorMid: Float32Array = new Float32Array(0);
+  walkingActuatorHalf: Float32Array = new Float32Array(0);
+  /** 59 actuator IDs in MJCF declaration order, used for reading the
+   * actuator_activation observable (different from action order!). */
+  walkingActivationIds: number[] = [];
+  /** qpos / qvel addresses for the 85 joints feeding joints_pos /
+   * joints_vel observables. Not contiguous — gaps for disabled
+   * appendages. */
+  walkingQposAdr: Int32Array = new Int32Array(0);
+  walkingDofAdr: Int32Array = new Int32Array(0);
   /** Sensor adr + dim cache used by the trained-walker observation
    * builder. */
   sensorIdx: {
@@ -275,9 +402,9 @@ export class Physics {
     forces: ({ adr: number; dim: number } | null)[];
     touches: ({ adr: number; dim: number } | null)[];
   } = { accel: null, gyro: null, vel: null, forces: [], touches: [] };
-  /** Body IDs of the 7 appendages whose egocentric xpos forms the
-   * appendages_pos observable. */
-  appendageBodyIds: number[] = [];
+  /** SITE IDs for the 7 appendages whose egocentric xpos forms the
+   * appendages_pos observable (6 claw tips + head site). */
+  appendageSiteIds: number[] = [];
   thoraxBodyId = -1;
 
   /**
@@ -510,17 +637,20 @@ export class Physics {
       obs[off + 2] = sensordata[adr + 2];
     }
     off += 3;
-    // ---- 3..61: actuator_activation (59) ------------------------------
+    // ---- 3..61: actuator_activation (59 in MJCF declaration order) ---
+    // dm_control fills this via observable.MJCFFeature('act', actuators)
+    // where actuators = mjcf_model.find_all('actuator') — i.e. MJCF
+    // declaration order, NOT the policy's action class order. Adhesion
+    // actuators have no act state (dyntype=none), so they appear as 0.
     for (let i = 0; i < 59; i++) {
-      const a = this.walkingActuatorIds[i];
-      // act[] is empty for stateless actuators; fall back to ctrl in
-      // that case so we always have a 59-dim history signal.
-      const v = (act && act.length > a && a >= 0) ? act[a] : 0;
+      const a = this.walkingActivationIds[i];
+      const v = (act && a >= 0 && act.length > a) ? act[a] : 0;
       obs[off + i] = v;
     }
     off += 59;
-    // ---- 62..82: appendages_pos (7×3 egocentric) ---------------------
-    if (this.thoraxBodyId >= 0) {
+    // ---- 62..82: appendages_pos (7×3 egocentric, claw sites + head) -
+    const siteXpos = (this.data as { site_xpos?: Float64Array }).site_xpos;
+    if (this.thoraxBodyId >= 0 && siteXpos) {
       const tx = xpos[3 * this.thoraxBodyId + 0];
       const ty = xpos[3 * this.thoraxBodyId + 1];
       const tz = xpos[3 * this.thoraxBodyId + 2];
@@ -530,12 +660,12 @@ export class Physics {
       const r10 = xmat[m + 3], r11 = xmat[m + 4], r12 = xmat[m + 5];
       const r20 = xmat[m + 6], r21 = xmat[m + 7], r22 = xmat[m + 8];
       for (let i = 0; i < 7; i++) {
-        const b = this.appendageBodyIds[i];
-        if (b < 0) { obs[off + 3 * i] = obs[off + 3 * i + 1] = obs[off + 3 * i + 2] = 0; continue; }
-        const dx = xpos[3 * b + 0] - tx;
-        const dy = xpos[3 * b + 1] - ty;
-        const dz = xpos[3 * b + 2] - tz;
-        // Rotate world delta into thorax frame: M^T · d.
+        const s = this.appendageSiteIds[i];
+        if (s < 0) { obs[off + 3 * i] = obs[off + 3 * i + 1] = obs[off + 3 * i + 2] = 0; continue; }
+        const dx = siteXpos[3 * s + 0] - tx;
+        const dy = siteXpos[3 * s + 1] - ty;
+        const dz = siteXpos[3 * s + 2] - tz;
+        // Body-frame projection: world_delta @ R == R^T · world_delta.
         obs[off + 3 * i + 0] = r00 * dx + r10 * dy + r20 * dz;
         obs[off + 3 * i + 1] = r01 * dx + r11 * dy + r21 * dz;
         obs[off + 3 * i + 2] = r02 * dx + r12 * dy + r22 * dz;
@@ -561,17 +691,20 @@ export class Physics {
     }
     off += 3;
     // ---- 104..188: joints_pos (85) ----------------------------------
-    // qpos[0..6] is the freejoint (xyz + quat). Joint values start at 7.
-    // Walking policy expects 85 joint qpos values in MJCF declaration
-    // order. flybody has more than 85 joints total, but the walker
-    // env config likely truncates to walking-relevant (no wing/antenna).
+    // The 85 joints feeding joints_pos are NOT contiguous in qpos —
+    // there are gaps for rostrum/haustellum/labrum/antennae/wings.
+    // walkingQposAdr[] holds the qpos address of each joint in
+    // observation order (decoded from flybody's
+    // walker.observables.joints_pos._mjcf_element list).
     for (let i = 0; i < 85; i++) {
-      obs[off + i] = qpos.length > 7 + i ? qpos[7 + i] : 0;
+      const a = this.walkingQposAdr[i];
+      obs[off + i] = (a >= 0 && a < qpos.length) ? qpos[a] : 0;
     }
     off += 85;
     // ---- 189..273: joints_vel (85) ----------------------------------
     for (let i = 0; i < 85; i++) {
-      obs[off + i] = qvel.length > 6 + i ? qvel[6 + i] : 0;
+      const a = this.walkingDofAdr[i];
+      obs[off + i] = (a >= 0 && a < qvel.length) ? qvel[a] : 0;
     }
     off += 85;
     // ---- 274..468: ref_displacement (65×3) ---------------------------
@@ -628,12 +761,15 @@ export class Physics {
 
   /**
    * Apply 59 actions from the trained walking policy to the
-   * corresponding 59 actuators. Acme's training stack wraps the env
-   * with `CanonicalSpecWrapper`, which tanh's the policy's mean
-   * output before it hits the env's [-1, 1] action_spec. We do the
-   * same — without it, raw policy outputs (which can hit ±2500 on
-   * out-of-distribution observations) all saturate at the clamp and
-   * the body can't move precisely.
+   * corresponding 59 actuators.
+   *
+   * Acme's training stack wraps the env with `CanonicalSpecWrapper`,
+   * which (1) tanh's the policy's mean output to bound it in [-1, 1],
+   * then (2) linearly remaps to each actuator's actual ctrlrange. We
+   * invert that wrapper here using the precomputed per-actuator
+   * (mid, half) so the policy can produce realistic torques across
+   * the full ctrlrange — for example head_twist's [-3, 3] vs
+   * adhere_claw's [0, 1].
    */
   applyTrainedWalkerActions(actions: Float32Array): void {
     if (actions.length !== 59) throw new Error(`actions must be 59-dim, got ${actions.length}`);
@@ -641,7 +777,7 @@ export class Physics {
     for (let i = 0; i < 59; i++) {
       const a = this.walkingActuatorIds[i];
       if (a < 0) continue;
-      ctrl[a] = Math.tanh(actions[i]);     // CanonicalSpecWrapper convention
+      ctrl[a] = this.walkingActuatorMid[i] + Math.tanh(actions[i]) * this.walkingActuatorHalf[i];
     }
   }
 

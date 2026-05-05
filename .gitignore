@@ -28,6 +28,13 @@ data/flybody-policies/
 
 # TF venv (1.4 GB; kept out of repo)
 .venv-tf/
+# flybody-only Python venv (no TF; for tools/dump_flybody_spec.py)
+.venv-flygym/
+
+# Derived: per-channel obs normalizer + canonical env spec dump,
+# both regenerable via tools/dump_flybody_spec.py
+public/walking-obs-norm.bin
+data/flybody-spec.json
 
 # flybody assets — vendored from TuragaLab/flybody main (149 MB)
 public/flybody/*.obj

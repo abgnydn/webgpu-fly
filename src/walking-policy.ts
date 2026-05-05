@@ -67,15 +67,50 @@ export function obsOffset(name: string): number {
 const MAGIC = "WGFLYWLK";
 const HEADER_BYTES = 8 + 6 * 4;       // magic + 6 × u32
 
-export interface ActOptions {
-  /** Apply per-call LayerNorm to the input observation before feeding
-   * the first dense. Substitute for the trained env's
-   * ObservationActionNorm wrapper which we don't have at runtime —
-   * keeps the policy's intermediate activations in-distribution
-   * regardless of absolute sensor scales. Default: false (raw obs)
-   * so the numpy ground-truth verification tests pass unchanged. */
-  inputLayerNorm?: boolean;
+/** Per-channel running mean/std from a flybody env rollout, used to
+ * approximate the trained env's ObservationActionNorm wrapper. The
+ * 286 dims cover the non-synthetic streams in alphabetical order,
+ * skipping ref_displacement and ref_root_quat (those we synthesize
+ * with a known scale at runtime, so they don't need normalizing). */
+export interface ObsNormStats {
+  mean: Float32Array;     // length 286
+  std: Float32Array;      // length 286
 }
+
+export async function loadWalkingObsNorm(
+  url: string = (import.meta.env.VITE_WALKING_OBS_NORM_URL ?? "/walking-obs-norm.bin"),
+): Promise<ObsNormStats> {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`failed to fetch ${url}: ${resp.status}`);
+  const buf = await resp.arrayBuffer();
+  const dv = new DataView(buf);
+  const n = dv.getUint32(0, true);
+  // skip 4-byte reserved
+  if (8 + 8 * n !== buf.byteLength) {
+    throw new Error(`obs-norm size mismatch: header n=${n}, file ${buf.byteLength} bytes`);
+  }
+  const mean = new Float32Array(buf, 8, n);
+  const std = new Float32Array(buf, 8 + 4 * n, n);
+  return { mean, std };
+}
+
+export interface ActOptions {
+  /** Apply per-call LayerNorm over the full 741-vec before the first
+   * dense. Crude fallback when no rollout-derived obsNorm is loaded. */
+  inputLayerNorm?: boolean;
+  /** Per-channel (mean, std) from a flybody env rollout. Applied to
+   * the non-synthetic streams of the 741-vec. Strongly preferred over
+   * inputLayerNorm — preserves relative scales between channels. */
+  obsNorm?: ObsNormStats;
+}
+
+/** The 286 normalized dims map back into the 741-vec at these byte
+ * offsets (alphabetical order minus ref_displacement at 274..469 and
+ * ref_root_quat at 469..729). Sums to 286. */
+const OBS_NORM_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0, 274],     // accelerometer..joints_vel (covers norm[0..274])
+  [729, 741],   // touch + velocimeter + world_zaxis (covers norm[274..286])
+];
 
 export interface WalkingPolicy {
   obsDim: number;       // 741
@@ -181,10 +216,23 @@ export async function loadWalkingPolicy(
       throw new Error(`obs has ${obs.length} dims, expected ${obsDim}`);
     }
     let input = obs;
-    if (opts.inputLayerNorm) {
-      // Per-call LN — substitute for the trained env's
-      // ObservationActionNorm wrapper. Keeps Dense1's input distribution
-      // sane when raw sensor scales differ from training distribution.
+    if (opts.obsNorm) {
+      // Per-channel (mean, std) normalization from rollout. Approximates
+      // the trained env's ObservationActionNorm. Synthetic ref_*
+      // channels are passed through unchanged.
+      obsNorm.set(obs);
+      const m = opts.obsNorm.mean;
+      const sd = opts.obsNorm.std;
+      let normIdx = 0;
+      for (const [lo, hi] of OBS_NORM_RANGES) {
+        for (let i = lo; i < hi; i++) {
+          obsNorm[i] = (obs[i] - m[normIdx]) / sd[normIdx];
+          normIdx++;
+        }
+      }
+      input = obsNorm;
+    } else if (opts.inputLayerNorm) {
+      // Crude fallback: per-call LayerNorm over the whole vector.
       let mean = 0;
       for (let i = 0; i < obsDim; i++) mean += obs[i];
       mean /= obsDim;

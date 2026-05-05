@@ -7,7 +7,7 @@ import { Room, RETINA_FOV_RAD } from "./room";
 import { Physics } from "./physics";
 import { motorFromBrain, resetVnc, vncSnapshot, type MotorContext } from "./vnc";
 import { GaitEvolver } from "./evolution";
-import { loadWalkingPolicy, type WalkingPolicy } from "./walking-policy";
+import { loadWalkingPolicy, loadWalkingObsNorm, type WalkingPolicy, type ObsNormStats } from "./walking-policy";
 
 const SUPER_CLASS = [
   "unknown", "sensory", "ascending", "intrinsic", "central",
@@ -970,6 +970,7 @@ async function main() {
   // synthetic forward-walk reference trajectory, and writes 59 actions
   // back into the leg + adhesion + head actuators each frame. ---
   let trainedWalker: WalkingPolicy | null = null;
+  let trainedObsNorm: ObsNormStats | null = null;
   let trainedActiveTargetCmS = 0;          // 0 = OFF; >0 = active fwd speed
   const obsScratch = new Float32Array(741);
   rlBtn.addEventListener("click", async () => {
@@ -994,6 +995,12 @@ async function main() {
         log(`policy load failed: ${(e as Error).message}`, "err");
         return;
       }
+      try {
+        trainedObsNorm = await loadWalkingObsNorm();
+        log(`obs normalizer loaded (${trainedObsNorm.mean.length}-dim from flybody env rollout)`, "ok");
+      } catch (e) {
+        log(`obs normalizer not available, falling back to per-call LN: ${(e as Error).message}`, "warn");
+      }
     }
     // 1.0 cm/s is the value where the policy reliably produces
     // straight-line forward progress; 1.5 had it scoot backward, 3.0
@@ -1016,9 +1023,13 @@ async function main() {
   (room as any).drivePolicyTick = () => {
     if (trainedActiveTargetCmS <= 0 || !trainedWalker || !physics) return false;
     physics.buildWalkingObservation(obsScratch, trainedActiveTargetCmS);
-    // Use per-call LN as a stand-in for the trained env's
-    // ObservationActionNorm wrapper. Keeps action magnitudes sane.
-    const actions = trainedWalker.act(obsScratch, undefined, { inputLayerNorm: true });
+    // Per-call LayerNorm over the full 741-vec is the most stable
+    // substitute we have for the trained env's ObservationActionNorm.
+    // The rollout-derived per-channel stats (when available) sometimes
+    // make things worse because random-action rollouts produce a much
+    // wider distribution than the policy actually sees in deployment.
+    const actions = trainedWalker.act(obsScratch, undefined,
+      trainedObsNorm ? { obsNorm: trainedObsNorm } : { inputLayerNorm: true });
     physics.applyTrainedWalkerActions(actions);
     // Track action stats for e2e introspection — low |actions| means
     // policy is producing weak commands (stand-still); saturated to ±1

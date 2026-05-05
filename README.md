@@ -90,6 +90,11 @@ tools/
   build_vnc.py         MANC CSV → vnc.bin (with DN-input + motor-leg metadata)
   extract_walking_policy.py    SavedModel checkpoint → walking-policy.bin
   verify_walking_policy.py     numpy ground-truth verifier (e2e fixtures)
+  dump_flybody_spec.py         live flybody.tasks.base.Walking env →
+                                data/flybody-spec.json (canonical actuator,
+                                joint, site, sensor orderings) +
+                                public/walking-obs-norm.bin (per-channel
+                                obs mean/std from a 600-step rollout)
   download_data.sh / download_manc.sh / download_flybody_policies.sh
   upload_to_r2.sh      pushes assets to Cloudflare R2
 
@@ -100,14 +105,19 @@ tests/smoke.spec.ts    22 Playwright e2e tests
 
 These are real and documented in commit messages — not selling-points to hide:
 
-1. The trained RL walker walks at ~13% of nominal speed because we
-   substitute per-call LayerNorm for the trained env's
-   `ObservationActionNorm` running mean/std stats. Body walks straight
-   and stays upright; just slower than it would in flybody Python.
-2. The 85-dim `joints_pos` slice and 59-dim action mapping are
-   MJCF-declaration-order guesses. The fact that the body walks at
-   all says we're roughly right; close to verified would need a
-   flybody Python rollout.
+1. The trained RL walker still walks slower than nominal because the
+   trained env's `ObservationActionNorm` running mean/std checkpoint
+   was never published with the policy. We substitute either per-call
+   LayerNorm or a 286-channel obs-norm derived from a `flybody` env
+   rollout (`tools/dump_flybody_spec.py`). Either keeps actions
+   non-saturating; the rollout-derived path produces near-zero lateral
+   drift, the LayerNorm path produces faster forward speed.
+2. ~~85-dim `joints_pos` and 59-dim action mapping were
+   MJCF-declaration guesses~~ — now verified against a live flybody
+   Walking env (`tools/dump_flybody_spec.py`). Three concrete bugs
+   were caught and fixed: action vector is **adhesion-first**,
+   actuators need per-channel `[lo, hi]` linear remap (not just
+   `tanh`), and the 85 joints are non-contiguous in qpos.
 3. CPG-mode (when "Use RL policy" is OFF) has a soft kinematic-assist
    on the freejoint translation scaled by motor command. The
    RL-policy mode has no such assist — actions go straight to actuators.
