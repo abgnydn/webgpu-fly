@@ -67,13 +67,23 @@ export function obsOffset(name: string): number {
 const MAGIC = "WGFLYWLK";
 const HEADER_BYTES = 8 + 6 * 4;       // magic + 6 × u32
 
+export interface ActOptions {
+  /** Apply per-call LayerNorm to the input observation before feeding
+   * the first dense. Substitute for the trained env's
+   * ObservationActionNorm wrapper which we don't have at runtime —
+   * keeps the policy's intermediate activations in-distribution
+   * regardless of absolute sensor scales. Default: false (raw obs)
+   * so the numpy ground-truth verification tests pass unchanged. */
+  inputLayerNorm?: boolean;
+}
+
 export interface WalkingPolicy {
   obsDim: number;       // 741
   hidden: number;       // 512
   actDim: number;       // 59
   nLayers: number;      // 4 (hidden layers)
   /** Run a single forward pass. obs.length must equal obsDim. */
-  act(obs: Float32Array, out?: Float32Array): Float32Array;
+  act(obs: Float32Array, out?: Float32Array, opts?: ActOptions): Float32Array;
 }
 
 export async function loadWalkingPolicy(
@@ -163,12 +173,32 @@ export async function loadWalkingPolicy(
 
   const action = new Float32Array(actDim);
 
-  function act(obs: Float32Array, out: Float32Array = action): Float32Array {
+  // Per-call obs scratch so we can normalize without mutating caller's array.
+  const obsNorm = new Float32Array(obsDim);
+
+  function act(obs: Float32Array, out: Float32Array = action, opts: ActOptions = {}): Float32Array {
     if (obs.length !== obsDim) {
       throw new Error(`obs has ${obs.length} dims, expected ${obsDim}`);
     }
-    // Layer 1: obs → 512, LayerNorm, tanh
-    dense(obs, denseW[0], denseB[0], h, obsDim, hidden);
+    let input = obs;
+    if (opts.inputLayerNorm) {
+      // Per-call LN — substitute for the trained env's
+      // ObservationActionNorm wrapper. Keeps Dense1's input distribution
+      // sane when raw sensor scales differ from training distribution.
+      let mean = 0;
+      for (let i = 0; i < obsDim; i++) mean += obs[i];
+      mean /= obsDim;
+      let varSum = 0;
+      for (let i = 0; i < obsDim; i++) {
+        const d = obs[i] - mean;
+        varSum += d * d;
+      }
+      const inv = 1 / Math.sqrt(varSum / obsDim + 1e-5);
+      for (let i = 0; i < obsDim; i++) obsNorm[i] = (obs[i] - mean) * inv;
+      input = obsNorm;
+    }
+    // Layer 1: input → 512, LayerNorm, tanh
+    dense(input, denseW[0], denseB[0], h, obsDim, hidden);
     layerNorm(h, lnScale, lnBias);
     tanh(h);
     // Layers 2..nLayers: hidden → hidden, ELU (Acme LayerNormMLP default)

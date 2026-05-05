@@ -628,11 +628,12 @@ export class Physics {
 
   /**
    * Apply 59 actions from the trained walking policy to the
-   * corresponding 59 actuators. Caller is responsible for: (a) running
-   * the policy forward pass, (b) ensuring actions are bounded
-   * (the trained policy outputs roughly [-3, 3] mean for in-distribution
-   * obs; ctrl ranges in MJCF clamp anyway, but we cap to ±1 here as a
-   * safety net since OOD inputs can produce huge outputs).
+   * corresponding 59 actuators. Acme's training stack wraps the env
+   * with `CanonicalSpecWrapper`, which tanh's the policy's mean
+   * output before it hits the env's [-1, 1] action_spec. We do the
+   * same — without it, raw policy outputs (which can hit ±2500 on
+   * out-of-distribution observations) all saturate at the clamp and
+   * the body can't move precisely.
    */
   applyTrainedWalkerActions(actions: Float32Array): void {
     if (actions.length !== 59) throw new Error(`actions must be 59-dim, got ${actions.length}`);
@@ -640,10 +641,7 @@ export class Physics {
     for (let i = 0; i < 59; i++) {
       const a = this.walkingActuatorIds[i];
       if (a < 0) continue;
-      // Clamp to ±1 to absorb OOD spikes; the env's ctrl range
-      // (often narrower) clamps further.
-      const v = actions[i];
-      ctrl[a] = v > 1 ? 1 : v < -1 ? -1 : v;
+      ctrl[a] = Math.tanh(actions[i]);     // CanonicalSpecWrapper convention
     }
   }
 

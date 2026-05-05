@@ -1010,11 +1010,29 @@ async function main() {
   // Drive hook: the room's render loop calls drivePolicyTick() every
   // physics frame. When the trained walker is active, build observation,
   // run policy, write actions; otherwise leave the CPG alone.
+  let policyTickCount = 0;
+  let policyActionStats = { absMax: 0, absMean: 0, count: 0 };
+  (window as unknown as { __rlActionStats: typeof policyActionStats }).__rlActionStats = policyActionStats;
   (room as any).drivePolicyTick = () => {
     if (trainedActiveTargetCmS <= 0 || !trainedWalker || !physics) return false;
     physics.buildWalkingObservation(obsScratch, trainedActiveTargetCmS);
-    const actions = trainedWalker.act(obsScratch);
+    // Use per-call LN as a stand-in for the trained env's
+    // ObservationActionNorm wrapper. Keeps action magnitudes sane.
+    const actions = trainedWalker.act(obsScratch, undefined, { inputLayerNorm: true });
     physics.applyTrainedWalkerActions(actions);
+    // Track action stats for e2e introspection — low |actions| means
+    // policy is producing weak commands (stand-still); saturated to ±1
+    // means OOD-explosion.
+    let m = 0, s = 0;
+    for (let i = 0; i < actions.length; i++) {
+      const a = Math.abs(actions[i]);
+      if (a > m) m = a;
+      s += a;
+    }
+    policyActionStats.absMax = Math.max(policyActionStats.absMax, m);
+    policyActionStats.absMean = (policyActionStats.absMean * policyTickCount + s / actions.length) / (policyTickCount + 1);
+    policyTickCount++;
+    policyActionStats.count = policyTickCount;
     return true;
   };
 

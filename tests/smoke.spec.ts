@@ -431,9 +431,16 @@ test.describe("webgpu-fly e2e", () => {
 
     const after = await page.evaluate(() => {
       const phys = (window as unknown as { __physicsForTest?: { data: { qpos: Float64Array } } }).__physicsForTest;
+      const stats = (window as unknown as { __rlActionStats?: { absMax: number; absMean: number; count: number } }).__rlActionStats;
       if (!phys) return null;
-      return { x: phys.data.qpos[0], y: phys.data.qpos[1], z: phys.data.qpos[2] };
+      return {
+        x: phys.data.qpos[0], y: phys.data.qpos[1], z: phys.data.qpos[2],
+        actionStats: stats,
+      };
     });
+    if (after?.actionStats) {
+      console.log(`[rl-walker] policy ticks=${after.actionStats.count} action |max|=${after.actionStats.absMax.toFixed(3)} |mean|=${after.actionStats.absMean.toFixed(3)}`);
+    }
 
     // Toggle off so subsequent tests start clean.
     await clickButton(page, "Use RL policy");
