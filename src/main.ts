@@ -418,12 +418,20 @@ async function main() {
       lastSpineMode = "MANC";
       const sign = fbCmd.fwd >= 0 ? 1 : -1;
       targetFwd = sign * Math.min(1, mancTotal * 60);
-      targetTurn = Math.max(-1, Math.min(1, mancAsym * 80 + fbCmd.turn * 0.5));
+      // Smaller MANC-asym gain (was 80) — small biological asymmetries
+      // in the connectome's L/R wiring no longer dominate symmetric
+      // bilateral DN stims like DNa01. Plus a "straight-walking
+      // dampener": when the fly's fwd intent is high, turn signals get
+      // attenuated so DNa01 / DNa02 / DNb01 don't curve.
+      const rawTurn = mancAsym * 30 + fbCmd.turn * 0.3;
+      const straightDamp = 1 - 0.75 * Math.min(1, Math.abs(targetFwd));
+      targetTurn = Math.max(-1, Math.min(1, rawTurn * straightDamp));
     } else {
       // MANC silent — fall back to synthetic spine.
       lastSpineMode = realMotor ? "synthetic (MANC quiet)" : "synthetic";
       targetFwd = Math.max(-1, Math.min(1, fbCmd.fwd));
-      targetTurn = Math.max(-1, Math.min(1, fbCmd.turn));
+      const straightDamp = 1 - 0.75 * Math.min(1, Math.abs(targetFwd));
+      targetTurn = Math.max(-1, Math.min(1, fbCmd.turn * straightDamp));
     }
     jump = fbCmd.jump;
 
@@ -833,7 +841,8 @@ async function main() {
     const ext = new Float32Array(header.numNeurons);
     let tick = 0;
     let lostTicks = 0;
-    let lastKnownTurnDir = 1;
+    let lastKnownAngle = 0;
+    let lastKnownArea = 0;
     while (continuousMode) {
       // Sense from a real retinal render at the fly's head pose. No
       // geometry shortcut — pixels of the scene get sampled, red blob
@@ -844,7 +853,8 @@ async function main() {
       ext.fill(0);
       if (Number.isFinite(angle) && sample.area > 0) {
         lostTicks = 0;
-        lastKnownTurnDir = angle > 0 ? 1 : -1;
+        lastKnownAngle = angle;
+        lastKnownArea = sample.area;
         const align = 1 - Math.abs(angle) / RETINA_FOV_RAD;     // 0..1
         const lScale = align * (angle > 0 ? 1.0 : 0.3);
         const rScale = align * (angle < 0 ? 1.0 : 0.3);
@@ -860,20 +870,26 @@ async function main() {
       const rate = await sim.captureRollingRate(50);
       viewer.pushSnapshot(rate);
 
-      if (lostTicks > 0) {
-        // Target off-camera. Bypass brain→spine motor (the residual
-        // VNC state would keep pushing the fly forward off-axis) and
-        // set drive directly. Fwd=0 to hold position; turn alternates
-        // every 8 ticks. Start in the opposite direction of last seen
-        // angle since fly almost always overshoots the target before
-        // losing it.
-        const scanCycle = Math.floor((lostTicks - 1) / 8) % 2 === 0 ? -1 : 1;
-        driveFwd = 0;
-        driveTurn = lastKnownTurnDir * scanCycle * 0.5;
-        room.setDrive(driveFwd, driveTurn);
-      } else {
-        // Brain → VNC stand-in → body via the normal motor path.
+      if (lostTicks === 0) {
+        // Target visible: full brain → spine → body path.
         await applyDriveFromSnapshot(rate, sample);
+      } else if (lostTicks <= 3) {
+        // Target briefly lost (1-3 ticks). Keep tracking using the
+        // last-known angle — this smooths out single-frame retina
+        // dropouts that the NaN-instant-sweep was making jumpy.
+        // Decay the angle estimate by 1.5× each missed tick so the
+        // memory fades if target stays gone.
+        const decay = 1 + 0.5 * lostTicks;
+        const memSample = { angle: lastKnownAngle * decay, area: lastKnownArea * 0.6 };
+        await applyDriveFromSnapshot(rate, memSample);
+      } else {
+        // Target lost for 4+ ticks: enter sweep mode. Bypass spine
+        // entirely; alternating turn every 8 ticks to find target.
+        const scanDir = lastKnownAngle >= 0 ? 1 : -1;
+        const scanCycle = Math.floor((lostTicks - 4) / 8) % 2 === 0 ? 1 : -1;
+        driveFwd = 0;
+        driveTurn = scanDir * scanCycle * 0.5;
+        room.setDrive(driveFwd, driveTurn);
       }
 
       tick++;

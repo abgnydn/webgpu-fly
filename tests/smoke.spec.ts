@@ -108,6 +108,24 @@ test.describe("webgpu-fly e2e", () => {
     expect(fwd!, `DNb01 fwd should be negative, got ${fwd}`).toBeLessThan(0);
   });
 
+  // DNa01 / DNa02 / DNb01 are bilateral straight-walking commands —
+  // their motor command should be mostly fwd, very little turn. If
+  // the spine produces a strong turn signal from these symmetric
+  // stims, the demo body curves instead of walking straight (the
+  // user's complaint).
+  for (const dn of ["DNa01", "DNa02", "DNb01"]) {
+    test(`${dn} walks straight (|turn| < 0.4)`, async ({ page }) => {
+      await clickButton(page, dn);
+      await waitButtonIdle(page, dn);
+      const log = await logText(page);
+      const slice = log.slice(log.lastIndexOf(`DN stim: ${dn}`));
+      const m = slice.match(/brain-driven motor: fwd=(-?[\d.]+)\s+turn=(-?[\d.]+)/);
+      expect(m, `${dn} motor line missing`).not.toBeNull();
+      const turn = parseFloat(m![2]);
+      expect(Math.abs(turn), `${dn} should walk straight, |turn|=${Math.abs(turn).toFixed(2)}`).toBeLessThan(0.4);
+    });
+  }
+
   test("retina detects red target during closed loop", async ({ page }) => {
     // Wait for flybody to attach so the room has the body in scene.
     await waitForLog(page, "flybody attached", 120_000);
