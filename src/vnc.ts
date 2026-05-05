@@ -313,42 +313,38 @@ export function motorFromBrain(rate: Float32Array, ctx: MotorContext): MotorComm
   let fwd = out.walkMag * out.walkSign;
   let turn = out.turnBias;
 
-  // L/R DN broad asymmetry adds a small steering bias for stims that
-  // don't trigger a famous DN (kept from previous implementation).
-  const meanL = meanRate(rate, ctx.dnLeft);
-  const meanR = meanRate(rate, ctx.dnRight);
-  const total = meanL + meanR;
-  if (total > 0.01) {
-    const asym = (meanR - meanL) / (total + 1e-6);
-    const trim = Math.abs(asym) < 0.20 ? 0 : asym - Math.sign(asym) * 0.20;
-    turn += trim * 0.3;
-  }
+  const visualActive = ctx.visual && Number.isFinite(ctx.visual.angle) && ctx.visual.area > 0;
 
-  // Visual reflex: steer toward target. Dead-zone ±5° to stop
-  // oscillation; turn gain saturates at ±1; forward speed attenuates
-  // as |angle| grows so the fly turns toward target before charging
-  // forward (otherwise it overshoots and loses sight).
-  if (ctx.visual && Number.isFinite(ctx.visual.angle) && ctx.visual.area > 0) {
-    const a = ctx.visual.angle;
+  if (visualActive) {
+    // Visual reflex OVERRIDES turn signal. Otherwise the synthetic
+    // spine's leg-motor asymmetry and the brain's broad DN asymmetry
+    // (both ipsilateral, both wrong-sign for target tracking under
+    // our 50-ms closed-loop cascade window) fight the reflex and
+    // make the fly spin away from target.
+    const a = ctx.visual!.angle;
     const aAbs = Math.abs(a);
     const dead = (5 * Math.PI) / 180;
+    const sign = a > 0 ? 1 : -1;
     if (aAbs > dead) {
-      // Linear gain capped at the saturation point. Magnitude tuned
-      // to physics's 6× yaw gain — total angular vel ~= 1.8 rad/sec
-      // at full turn, which is fast enough to track but not so fast
-      // that the fly overshoots past target between camera ticks.
-      const sign = a > 0 ? 1 : -1;
       const mag = Math.min(1, aAbs / ((45 * Math.PI) / 180));
-      turn += sign * mag * 0.3;
+      turn = sign * mag * 0.7;       // owns turn (not +=)
+    } else {
+      turn = 0;
     }
-    // Forward only if target is reasonably in front. Magnitude scales
-    // with target visual area (closer = faster) AND with alignment
-    // (1 at center, 0 at ±60°), so the fly slows on hard turns.
+    // Forward speed scales by alignment — fly slows on hard turns.
     const fovHalf = (60 * Math.PI) / 180;
-    if (aAbs < fovHalf) {
-      const alignment = 1 - aAbs / fovHalf;
-      const baseSpeed = Math.min(0.6, ctx.visual.area * 8 + 0.2);
-      fwd += baseSpeed * alignment;
+    const alignment = aAbs < fovHalf ? 1 - aAbs / fovHalf : 0;
+    const baseSpeed = Math.min(0.6, ctx.visual!.area * 8 + 0.2);
+    fwd = baseSpeed * alignment;     // owns fwd
+  } else {
+    // No visual cue: brain → spine motor, plus broad-DN asym.
+    const meanL = meanRate(rate, ctx.dnLeft);
+    const meanR = meanRate(rate, ctx.dnRight);
+    const total = meanL + meanR;
+    if (total > 0.01) {
+      const asym = (meanR - meanL) / (total + 1e-6);
+      const trim = Math.abs(asym) < 0.20 ? 0 : asym - Math.sign(asym) * 0.20;
+      turn += trim * 0.3;
     }
   }
 

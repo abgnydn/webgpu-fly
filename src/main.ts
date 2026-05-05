@@ -402,24 +402,30 @@ async function main() {
       mancAsym = meanR - meanL;
       lastMancActivity = { legs: mancTotal, wing: realMotor.wing, neck: realMotor.neck, abdomen: realMotor.abdomen };
     }
-    if (mancTotal > 0.001) {
+    const visualActive = visual && Number.isFinite(visual.angle) && visual.area > 0;
+    if (visualActive) {
+      // Visual reflex (computed inside motorFromBrain) owns the motor.
+      // Skip the MANC magnitude blending — under closed-loop optic
+      // stim the asymmetric motor signal is wrong-direction relative
+      // to the visual cue (50-ms cascade can't develop the brain's
+      // contralateral wiring). Synthetic VNC's reflex has correct sign.
+      lastSpineMode = "visual reflex";
+      targetFwd = Math.max(-1, Math.min(1, fbCmd.fwd));
+      targetTurn = Math.max(-1, Math.min(1, fbCmd.turn));
+    } else if (mancTotal > 0.001) {
       // MANC is firing meaningfully — use its magnitude with synthetic
-      // direction sign. This is the "real spine takes over" mode.
+      // direction sign.
       lastSpineMode = "MANC";
       const sign = fbCmd.fwd >= 0 ? 1 : -1;
       targetFwd = sign * Math.min(1, mancTotal * 60);
       targetTurn = Math.max(-1, Math.min(1, mancAsym * 80 + fbCmd.turn * 0.5));
     } else {
-      // MANC silent (DN cascade didn't reach motor pools strongly):
-      // fall back to synthetic spine so the demo stays responsive.
+      // MANC silent — fall back to synthetic spine.
       lastSpineMode = realMotor ? "synthetic (MANC quiet)" : "synthetic";
       targetFwd = Math.max(-1, Math.min(1, fbCmd.fwd));
       targetTurn = Math.max(-1, Math.min(1, fbCmd.turn));
     }
     jump = fbCmd.jump;
-    if (visual && Number.isFinite(visual.angle) && visual.area > 0) {
-      targetTurn += visual.angle * 1.0;
-    }
 
     // Smoothing — exponential blend so gait feels less jittery.
     const alpha = 0.35;

@@ -222,6 +222,38 @@ test.describe("webgpu-fly e2e", () => {
   // mid-turn — but the run as a whole shouldn't show the fly walking
   // off into space, and at least one tick should have a finite angle
   // proving the retina did sample the target at some point.
+  // The visual reflex must turn the fly TOWARD the target, not away
+  // from it. Catches sign errors in the qvel-injection / reflex chain
+  // that are otherwise invisible (the fly ends up sweep-mode-locked
+  // and the dist test still passes because the body never wandered).
+  // Across consecutive finite-angle ticks, |angle| must shrink at
+  // least once — i.e. the fly does close the gap between tick N and
+  // tick N+1 at some point during the run.
+  test("visual reflex turns fly TOWARD target (sign correct)", async ({ page }) => {
+    await waitForLog(page, "flybody attached", 120_000);
+    await clickButton(page, "Track target");
+    await page.waitForTimeout(8_000);
+    await clickButton(page, "Track target");
+    const log = await logText(page);
+    const ticks = [...log.matchAll(/tick (\d+): angle=([^°]+)° dist=([\d.]+)cm/g)];
+    const finiteAngles: number[] = [];
+    for (const t of ticks) {
+      const a = t[2].trim();
+      if (a !== "NaN") finiteAngles.push(parseFloat(a));
+    }
+    expect(finiteAngles.length, "no finite angles seen").toBeGreaterThan(2);
+    // Find any consecutive-tick pair where |angle| got smaller — i.e.
+    // the fly successfully closed in. With sign error, |angle|
+    // monotonically grows from ~0 until the target leaves view.
+    let approached = false;
+    for (let i = 1; i < finiteAngles.length; i++) {
+      if (Math.abs(finiteAngles[i]) < Math.abs(finiteAngles[i - 1]) - 0.5) {
+        approached = true; break;
+      }
+    }
+    expect(approached, `|angle| only grew or held: ${finiteAngles.join(", ")}`).toBe(true);
+  });
+
   test("closed-loop doesn't flee from target", async ({ page }) => {
     await waitForLog(page, "flybody attached", 120_000);
     await clickButton(page, "Track target");

@@ -283,7 +283,16 @@ export class Physics {
         // can find the target inside one camera-tick window. With
         // mujoco dt=0.1ms × 32 substeps × ~15 RAF/sec = ~48 ms sim
         // per closed-loop tick, gain of 6 gives ~17°/tick at |turn|=0.5.
-        qvel[5] = -this.turnCmd * 6.0;
+        //
+        // Sign: turnCmd > 0 means "target on fly's left, turn LEFT to
+        // face it" (matches retinalSample()'s positive-angle = left
+        // convention and vnc.ts's visual reflex). In MuJoCo z-up,
+        // counter-clockwise yaw (looking down) = left turn = positive
+        // qvel[5]. Old code had this negated which produced a
+        // bug-feedback loop: fly saw target on left, turned right,
+        // target moved further left, reflex got stronger, fly spun
+        // away from target.
+        qvel[5] = this.turnCmd * 6.0;
       }
       this.mujoco.mj_step(this.model, this.data);
     }
