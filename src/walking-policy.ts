@@ -21,21 +21,48 @@
 //   - Run forward pass on a 741-vec observation, return 59-vec action.
 //
 // What this module DOES NOT yet do:
-//   - Build the observation vector. flybody's walk_imitation task
-//     concatenates ~10 observable streams (gyro + accelerometer +
-//     velocimeter + world_zaxis + joints_pos + joints_vel +
-//     actuator_activation + appendages_pos + force + touch +
-//     ref_displacement + ref_root_quat) in a specific order. Each
-//     stream has a fixed length defined by the MJCF. To wire this up,
-//     someone needs to either:
-//       (a) Run flybody in Python, dump observation_spec ordering and
-//           per-step values, port the construction to JS verbatim.
-//       (b) Read dm_control source and reproduce the
-//           Dict[str, ndarray] → flat-vector concatenation logic.
-//   - Map 59 action outputs to specific flybody actuator indices. The
-//     policy was trained on a subset of the 111 actuators (the 59
-//     leg + thorax actuators relevant to walking). Mapping requires
-//     reading the trained env's action_spec.
+//   - Build the observation vector at runtime from mujoco_wasm state.
+//     The schema below is decoded from the SavedModel's FunctionDef
+//     (the 12 flatten/concat constants in the inference graph give
+//     each observable's flat dim, and dm_control's flatten_observation
+//     concatenates Dict by sorted key, so the order is alphabetical).
+//   - Map 59 action outputs to flybody MJCF actuator indices. The
+//     subset is the same 59 actuators that show up in
+//     actuator_activation — they're all listed in the MJCF in the
+//     <actuator/> block, in declaration order.
+
+/** Order matters — observations are concatenated alphabetically, which
+ * is dm_control's `flatten_observation_specs` convention applied to
+ * the dict the walker exposes. Total: 741 floats. */
+export const WALKING_OBS_LAYOUT: Array<{ name: string; dim: number; shape: readonly number[] }> = [
+  { name: "accelerometer",       dim:   3, shape: [3] },
+  { name: "actuator_activation", dim:  59, shape: [59] },
+  { name: "appendages_pos",      dim:  21, shape: [7, 3] },     // 7 appendages × xyz, egocentric frame
+  { name: "force",               dim:  18, shape: [6, 3] },     // 6 contact force sensors × xyz
+  { name: "gyro",                dim:   3, shape: [3] },
+  { name: "joints_pos",          dim:  85, shape: [85] },        // 85 actuated joints' qpos
+  { name: "joints_vel",          dim:  85, shape: [85] },        // matching qvel
+  { name: "ref_displacement",    dim: 195, shape: [65, 3] },     // 65-frame future reference ΔR
+  { name: "ref_root_quat",       dim: 260, shape: [65, 4] },     // 65-frame future reference quat
+  { name: "touch",               dim:   6, shape: [6] },         // 6 touch sensors (foot contact)
+  { name: "velocimeter",         dim:   3, shape: [3] },
+  { name: "world_zaxis",         dim:   3, shape: [3] },
+];
+
+/** Sums to 741 — the policy's input dimension. */
+export const WALKING_OBS_TOTAL = WALKING_OBS_LAYOUT.reduce((s, o) => s + o.dim, 0);
+
+/** Helper: returns the byte offset where `name` starts in a 741-vec
+ * built from WALKING_OBS_LAYOUT. Useful for writing one observable at
+ * a time without recomputing offsets. */
+export function obsOffset(name: string): number {
+  let off = 0;
+  for (const o of WALKING_OBS_LAYOUT) {
+    if (o.name === name) return off;
+    off += o.dim;
+  }
+  throw new Error(`unknown observable: ${name}`);
+}
 
 const MAGIC = "WGFLYWLK";
 const HEADER_BYTES = 8 + 6 * 4;       // magic + 6 × u32

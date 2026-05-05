@@ -327,6 +327,37 @@ test.describe("webgpu-fly e2e", () => {
     }
   });
 
+  // The 741-dim observation layout decoded from the SavedModel proto
+   // (12 observables, alphabetical order, dims summing to 741) is a
+   // strict contract — drift here means the policy receives garbage at
+   // runtime. Lock it down.
+  test("walking policy obs layout sums to 741", async ({ page }) => {
+    await page.goto("/");
+    const result = await page.evaluate(async () => {
+      const modPath = "/src/walking-policy.ts";
+      const mod = await import(/* @vite-ignore */ modPath);
+      const total = mod.WALKING_OBS_TOTAL;
+      const layout = mod.WALKING_OBS_LAYOUT.map((o: { name: string; dim: number }) => ({
+        name: o.name, dim: o.dim,
+      }));
+      // Spot-check a few offsets — these must match the alphabetical
+      // concatenation order the trained policy was exported with.
+      const offAccel = mod.obsOffset("accelerometer");
+      const offJointsPos = mod.obsOffset("joints_pos");
+      const offRefDisp = mod.obsOffset("ref_displacement");
+      const offWorldZ = mod.obsOffset("world_zaxis");
+      return { total, layout, offAccel, offJointsPos, offRefDisp, offWorldZ };
+    });
+    expect(result.total).toBe(741);
+    expect(result.layout[0].name).toBe("accelerometer");
+    expect(result.layout[result.layout.length - 1].name).toBe("world_zaxis");
+    // Offsets are cumulative sums of preceding dims.
+    expect(result.offAccel).toBe(0);
+    expect(result.offJointsPos).toBe(3 + 59 + 21 + 18 + 3);   // 104
+    expect(result.offRefDisp).toBe(3 + 59 + 21 + 18 + 3 + 85 + 85);   // 274
+    expect(result.offWorldZ).toBe(741 - 3);
+  });
+
   test("trained walking policy loads + forward-passes", async ({ page }) => {
     await page.goto("/");
     const result = await page.evaluate(async () => {
