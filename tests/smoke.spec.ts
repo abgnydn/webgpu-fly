@@ -108,6 +108,21 @@ test.describe("webgpu-fly e2e", () => {
     expect(fwd!, `DNb01 fwd should be negative, got ${fwd}`).toBeLessThan(0);
   });
 
+  // MDN is the canonical "moonwalker" command pair. Adding it as a
+  // famous-DN button required cell_type → root_id lookup in
+  // brain.meta.json (4 brain neurons + 4 VNC neurons via MANC name match).
+  // This test asserts the button exists and the brain stim produces a
+  // meaningful cascade — cementing the new-DN wiring.
+  test("MDN button stims connectome (Dallmann walking-circuit roster)", async ({ page }) => {
+    const btn = page.locator(`.stim-btn:has(.label:has-text("MDN"))`).first();
+    await expect(btn, "MDN famous-DN button missing").toBeVisible({ timeout: 30_000 });
+    await clickButton(page, "MDN");
+    await waitButtonIdle(page, "MDN");
+    const log = await logText(page);
+    // Expect an MDN section with the standard cascade header line.
+    expect(log).toMatch(/--- DN stim: MDN/);
+  });
+
   // DNa01 / DNa02 / DNb01 are bilateral straight-walking commands —
   // their motor command should be mostly fwd, very little turn. If
   // the spine produces a strong turn signal from these symmetric

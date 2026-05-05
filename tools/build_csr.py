@@ -316,7 +316,10 @@ def main() -> int:
         "DNa02": "forward walking, faster (Bidaye et al.)",
         "DNb01": "backward walking — 'moonwalker' (Bidaye 2014)",
         "DNp01": "Giant Fiber — escape jump (Wyman 1984)",
+        "DNp09": "looming-evoked freezing/jump (von Reyn et al. 2014)",
+        "DNp52": "forward walking — Dallmann walking circuit (2026)",
         "DNg13": "turning",
+        "MDN":   "moonwalking (backward) command — Bidaye et al.",
     }
     cell_type_col = ann["cell_type"] if "cell_type" in ann.columns else None
     if cell_type_col is not None:
