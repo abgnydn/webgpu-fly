@@ -618,9 +618,38 @@ async function main() {
   rlBtn.style.flex = "1 0 100%";
   rlBtn.innerHTML = `<span class="label">Use RL policy (TuragaLab)</span><span class="hint">trained MLP, observation→59 actions</span>`;
   rlSection.appendChild(rlBtn);
+  // "Honest mode" toggle — flips all three demo cheats off at once:
+  //   - Physics.kinematicAssistEnabled (CPG freejoint qvel write)
+  //   - vnc.ts visual-reflex angle bypass (use brain cascade instead)
+  //   - physics.ts synthetic ref (use real fly mocap instead)
+  // The rest of the demo keeps using the same brain → motor pipeline,
+  // it's just sourced from real physics + real data instead of
+  // hardcoded shortcuts.
+  const honestBtn = document.createElement("button");
+  honestBtn.className = "stim-btn";
+  honestBtn.style.flex = "1 0 100%";
+  honestBtn.style.marginTop = "6px";
+  honestBtn.innerHTML = `<span class="label">Honest mode</span><span class="hint">no kinematic assist, brain-cascade reflex, mocap ref</span>`;
+  rlSection.appendChild(honestBtn);
   stimRow.parentElement?.appendChild(rlSection);
-  buttons.push(rlBtn);
-  // Toggle handler — wired below once we know the policy is ready.
+  buttons.push(rlBtn, honestBtn);
+  honestBtn.addEventListener("click", () => {
+    const w = window as unknown as {
+      __visualReflexFromBrain?: boolean;
+      __walkingRefFromMocap?: boolean;
+    };
+    const honest = !honestBtn.classList.contains("active");
+    Physics.kinematicAssistEnabled = !honest;
+    w.__visualReflexFromBrain = honest;
+    w.__walkingRefFromMocap = honest;
+    if (honest) honestBtn.classList.add("active");
+    else honestBtn.classList.remove("active");
+    log(honest
+      ? "honest mode: ON (no kinematic assist, brain-cascade reflex, mocap ref)"
+      : "honest mode: OFF (default cheats restored)", "ok");
+  });
+  // Toggle handler for the RL button — wired below once we know the
+  // policy is ready.
 
   // --- Wire scrub + play + record ---
   const controls = document.getElementById("controls") as HTMLDivElement;
