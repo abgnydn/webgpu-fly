@@ -527,7 +527,7 @@ async function main() {
     // Some buttons use a paper-given name (RRN) while the FlyWire
     // annotation uses a different cell_type code (CB0257). Map them
     // for the Codex deep-link so the ↗ icon goes to the right cell.
-    const codexAlias: Record<string, string> = { RRN: "CB0257" };
+    const codexAlias: Record<string, string> = { RRN: "CB0257", BPN: "CL210" };
 
     for (const [name, idxs] of Object.entries(famousDns)) {
       const btn = document.createElement("button");

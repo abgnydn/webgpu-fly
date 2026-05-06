@@ -20,6 +20,9 @@ public/vnc.meta.json
 # MANC raw downloads (Janelia public bucket; tools/download_manc.sh)
 data/manc/
 
+# Dallmann 2026 supplementary table 1 — manually downloaded from biorxiv.
+data/raw/dallmann_2026/
+
 # Trained walking policy + raw flybody policy SavedModels.
 # Regen: download trained-fly-policies.zip from janelia.figshare,
 # unzip into data/flybody-policies/, run tools/extract_walking_policy.py.

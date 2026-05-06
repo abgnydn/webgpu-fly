@@ -4,6 +4,12 @@ to the forward-walking circuit:
   RRN   — Roadrunner neurons, central-brain forward-walking command
           (cell_type CB0257 in FAFB/FlyWire; pair of neurons identified
           in Dallmann et al. 2026, bioRxiv 10.64898/2026.01.04.697356)
+  BPN   — Bolt protocerebral neurons, the other excitatory forward-walking
+          command (Bidaye et al. 2020). Curated by Dallmann 2026 as 32
+          neurons spanning 4 sub-communities (BPN1-4) and multiple
+          FAFB cell_types (CL210, SMP459, SMP460, SMP461, plus
+          unannotated). Resolved by root_id from Dallmann's
+          Supplementary Table 1.
   DNp52 — leg-cluster DN downstream of RRN+BPN (Dallmann 2026)
   DNp09 — looming-evoked freezing/jump (von Reyn et al. 2014)
   MDN   — moonwalking (backward) command (Bidaye et al.)
@@ -32,6 +38,7 @@ import numpy as np
 ROOT_IDS_NPY = Path("data/raw/proofread_root_ids_783.npy")
 ANN_TSV = Path("data/raw/flywire_annotations/supplemental_files/"
                "Supplemental_file1_neuron_annotations.tsv")
+DALLMANN_TABLE_1 = Path("data/raw/dallmann_2026/supplementary_table_1.xlsx")
 META_JSON = Path("public/brain.meta.json")
 
 # Famous-DN buttons (UI). RRN is technically not a DN but is the command
@@ -39,6 +46,7 @@ META_JSON = Path("public/brain.meta.json")
 # button row.
 NEW_DNS = {
     "RRN":   "forward walking — Roadrunner neurons (Dallmann 2026); cell_type CB0257",
+    "BPN":   "forward walking — Bolt protocerebral neurons (Bidaye 2020); 32 cells across BPN1-4",
     "DNp09": "looming-evoked freezing/jump (von Reyn et al. 2014)",
     "DNp52": "forward walking — Dallmann walking circuit (2026)",
     "MDN":   "moonwalking (backward) command — Bidaye et al.",
@@ -48,6 +56,13 @@ NEW_DNS = {
 # FAFB/FlyWire under cell_type=CB0257.
 DN_CELL_TYPE_OVERRIDES = {
     "RRN": "CB0257",
+}
+
+# Buttons whose neurons cannot be resolved from a single FlyWire cell_type
+# and must be looked up by root_id from Dallmann 2026 Supp Table 1's
+# `community_name` column.
+COMMUNITY_NAME_LOOKUPS = {
+    "BPN": ("BPN1", "BPN2", "BPN3", "BPN4"),  # Bidaye 2020 Bolt PNs
 }
 
 # 21 DN cell types Dallmann 2026 places in the leg/LTct clusters
@@ -63,19 +78,44 @@ WALKING_CIRCUIT_CELL_TYPES = (
 )
 
 
+def _load_dallmann_table_1():
+    """Returns list of (connectome_dataset, root_id, cell_type, community_name)
+    tuples from Dallmann 2026 Supplementary Table 1, FlyWire rows only."""
+    if not DALLMANN_TABLE_1.exists():
+        return []
+    import openpyxl
+    wb = openpyxl.load_workbook(DALLMANN_TABLE_1, data_only=True)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    out = []
+    for r in rows[1:]:
+        ds, rid, ct, cn = r[0], r[1], r[2], r[3]
+        if ds == "flywire_v783" and rid is not None:
+            out.append((ds, int(rid), str(ct).strip() if ct else "", str(cn).strip() if cn else ""))
+    return out
+
+
 def main() -> None:
     if not ROOT_IDS_NPY.exists() or not ANN_TSV.exists():
         raise SystemExit(f"missing input data — run bash tools/download_data.sh first.")
     if not META_JSON.exists():
         raise SystemExit(f"{META_JSON} missing — run tools/build_csr.py first.")
+    if COMMUNITY_NAME_LOOKUPS and not DALLMANN_TABLE_1.exists():
+        raise SystemExit(
+            f"{DALLMANN_TABLE_1} missing — required for community-name "
+            f"lookups (e.g. BPN). Download Supplementary Table 1 from "
+            f"bioRxiv 10.64898/2026.01.04.697356 and save as "
+            f"{DALLMANN_TABLE_1}."
+        )
 
     root_ids = np.load(ROOT_IDS_NPY)
     id_to_idx = {int(r): i for i, r in enumerate(root_ids)}
 
     # Build cell_type → label lookup. For RRN the FlyWire annotation
     # uses CB0257, not "RRN" — apply the override.
+    cell_type_keys = {label for label in NEW_DNS if label not in COMMUNITY_NAME_LOOKUPS}
     label_to_search = {
-        DN_CELL_TYPE_OVERRIDES.get(label, label): label for label in NEW_DNS
+        DN_CELL_TYPE_OVERRIDES.get(label, label): label for label in cell_type_keys
     }
     found = {label: [] for label in NEW_DNS}
     found_circuit = {ct: [] for ct in WALKING_CIRCUIT_CELL_TYPES}
@@ -92,6 +132,16 @@ def main() -> None:
                 found[label_to_search[ct]].append(idx)
             if ct in found_circuit:
                 found_circuit[ct].append(idx)
+
+    # Resolve community-name buttons from Dallmann's Supp Table 1 by root_id.
+    if COMMUNITY_NAME_LOOKUPS:
+        table = _load_dallmann_table_1()
+        for label, community_names in COMMUNITY_NAME_LOOKUPS.items():
+            for _, rid, _, cn in table:
+                if cn in community_names:
+                    idx = id_to_idx.get(rid)
+                    if idx is not None:
+                        found[label].append(idx)
 
     meta = json.loads(META_JSON.read_text())
     meta.setdefault("famous_dns", {})

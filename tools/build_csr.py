@@ -321,13 +321,19 @@ def main() -> int:
         "DNg13": "turning",
         "MDN":   "moonwalking (backward) command — Bidaye et al.",
         "RRN":   "forward walking — Roadrunner neurons (Dallmann 2026); cell_type CB0257",
+        "BPN":   "forward walking — Bolt protocerebral neurons (Bidaye 2020); 32 cells across BPN1-4",
     }
     # Some labels (RRN) differ from the FlyWire cell_type. Map them so
     # the lookup uses the right column value.
     label_to_cell_type = {"RRN": "CB0257"}
+    # Labels resolved by root_id from Dallmann 2026 Supp Table 1's
+    # community_name column (multi-cell-type curated groups).
+    community_name_lookups = {"BPN": ("BPN1", "BPN2", "BPN3", "BPN4")}
     cell_type_col = ann["cell_type"] if "cell_type" in ann.columns else None
     if cell_type_col is not None:
         for label in famous_labels:
+            if label in community_name_lookups:
+                continue
             ct = label_to_cell_type.get(label, label)
             mask = cell_type_col == ct
             if not mask.any():
@@ -338,6 +344,24 @@ def main() -> int:
                 for r in root_ids_for_label
                 if int(r) in id_to_idx
             ]
+            if idxs:
+                famous_dns[label] = idxs
+
+    # Resolve community_name buttons (BPN) from Dallmann 2026 Supp Table 1.
+    DALLMANN_TABLE_1 = Path("data/raw/dallmann_2026/supplementary_table_1.xlsx")
+    if community_name_lookups and DALLMANN_TABLE_1.exists():
+        import openpyxl
+        wb = openpyxl.load_workbook(DALLMANN_TABLE_1, data_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        for label, cn_set in community_name_lookups.items():
+            idxs: list[int] = []
+            for r in rows[1:]:
+                ds, rid, _, cn = r[0], r[1], r[2], r[3]
+                if ds == "flywire_v783" and cn and str(cn).strip() in cn_set:
+                    idx = id_to_idx.get(int(rid))
+                    if idx is not None:
+                        idxs.append(int(idx))
             if idxs:
                 famous_dns[label] = idxs
 

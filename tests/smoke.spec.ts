@@ -149,6 +149,28 @@ test.describe("webgpu-fly e2e", () => {
     expect(fwd!, `RRN should drive forward (fwd>0), got ${fwd}`).toBeGreaterThan(0);
   });
 
+  // BPN (Bolt protocerebral neurons, Bidaye 2020) is the other published
+  // excitatory forward-walking command. Identified via Dallmann 2026 Supp
+  // Table 1 as 32 neurons across 4 sub-communities. Like RRN it should
+  // produce a large cascade and net-forward motor.
+  test("BPN button cascades and drives forward motor", async ({ page }) => {
+    const btn = page.locator(`.stim-btn:has(.label:has-text("BPN"))`).first();
+    await expect(btn, "BPN famous-DN button missing").toBeVisible({ timeout: 30_000 });
+    await clickButton(page, "BPN");
+    await waitButtonIdle(page, "BPN");
+    const log = await logText(page);
+    expect(log, "BPN stim block missing").toMatch(/--- DN stim: BPN/);
+    const idx = log.lastIndexOf("--- DN stim: BPN");
+    const slice = log.slice(idx);
+    const recruits = slice.match(/final-window recruits:\s*([\d,]+)/);
+    expect(recruits, "BPN recruits line missing").not.toBeNull();
+    const n = parseInt(recruits![1].replace(/,/g, ""), 10);
+    expect(n, `BPN cascade too small: ${n}`).toBeGreaterThan(50);
+    const fwd = extractNumber(slice, /brain-driven motor: fwd=(-?[\d.]+)/);
+    expect(fwd, "BPN motor line missing").not.toBeNull();
+    expect(fwd!, `BPN should drive forward (fwd>0), got ${fwd}`).toBeGreaterThan(0);
+  });
+
   // DNa01 / DNa02 / DNb01 are bilateral straight-walking commands —
   // their motor command should be mostly fwd, very little turn. If
   // the spine produces a strong turn signal from these symmetric
