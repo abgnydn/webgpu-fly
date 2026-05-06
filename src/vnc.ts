@@ -342,7 +342,12 @@ export function motorFromBrain(rate: Float32Array, ctx: MotorContext): MotorComm
 
     const a = ctx.visual!.angle;
     const aAbs = Math.abs(a);
-    const dead = (5 * Math.PI) / 180;
+    // Smaller deadzone: 2° was 5°. With 5° deadzone, when target sat
+    // at the boundary the body barely turned while still walking
+    // forward, slowly losing the target — caused intermittent failure
+    // in the e2e "TOWARD target" test (1/3 fail rate). 2° is below
+    // the test's 0.5° resolution so flakiness vanishes.
+    const dead = (2 * Math.PI) / 180;
 
     if (useBrain) {
       const meanL = meanRate(rate, ctx.dnLeft);
