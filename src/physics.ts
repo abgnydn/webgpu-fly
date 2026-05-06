@@ -12,7 +12,7 @@ import type {
   MainModule, MjModel, MjData,
   MjVFS, MjvScene, MjvOption, MjvPerturb, MjvCamera,
 } from "@mujoco/mujoco";
-import { getOrFetch, cacheStats } from "./cache";
+import { getOrFetch } from "./cache";
 
 export class Physics {
   mujoco!: MainModule;
@@ -45,15 +45,54 @@ export class Physics {
     //   skybox, exactly what the official Python wrapper composes.
     // We load both into the VFS so MuJoCo's <include> resolves it
     // without any string surgery on our end.
-    // Allow VITE_FLYBODY_URL to point at an external host (CDN / GitHub
-    // Release) for the 134 MB of flybody assets. Defaults to the local
-    // public/flybody dir for dev.
+    //
+    // Bundle path: tools/bake_flybody_bundle.py concats all 87 assets
+    // (floor.xml, fruitfly.xml, 85 OBJs) into one binary so we get a
+    // single IDB transaction instead of 87. Per-file IDB transactions
+    // were costing ~300-1000 ms each (~34 s total even on cache hits!).
     const base = (import.meta.env.VITE_FLYBODY_URL || "/flybody").replace(/\/$/, "");
-    onProgress?.("fetching floor.xml + fruitfly.xml");
-    const [floorText, flyText] = await Promise.all([
-      fetch(`${base}/floor.xml`).then((r) => r.text()),
-      fetch(`${base}/fruitfly.xml`).then((r) => r.text()),
-    ]);
+    const bundleUrl = (import.meta.env.VITE_FLYBODY_BUNDLE_URL || "/flybody.bundle.bin")
+      + (((globalThis as unknown as { __flybodyBundleVersion?: string }).__flybodyBundleVersion)
+        ? `?v=${(globalThis as unknown as { __flybodyBundleVersion?: string }).__flybodyBundleVersion}`
+        : "");
+
+    onProgress?.("fetching flybody bundle (140 MB, one IDB transaction)");
+    const t0 = performance.now();
+    const bundle = await getOrFetch(bundleUrl, bundleUrl);
+    onProgress?.(`bundle fetched in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
+
+    // Parse bundle: tiny header + manifest, then names + data sections.
+    const bv = new DataView(bundle);
+    const magic = String.fromCharCode(...new Uint8Array(bundle, 0, 8));
+    if (magic !== "WGFLYBND") {
+      throw new Error(`flybody bundle bad magic: "${magic}", expected "WGFLYBND"`);
+    }
+    const bundleVersion = bv.getUint32(8, true);
+    if (bundleVersion !== 1) throw new Error(`flybody bundle version ${bundleVersion} unsupported`);
+    const nFiles = bv.getUint32(12, true);
+    const HEADER_BYTES = 16;
+    const namesSectionOff = HEADER_BYTES + nFiles * 16;
+    const u8 = new Uint8Array(bundle);
+    const decoder = new TextDecoder("utf-8");
+    const fileBytes = new Map<string, Uint8Array>();
+    for (let i = 0; i < nFiles; i++) {
+      const off = HEADER_BYTES + i * 16;
+      const nameOff = bv.getUint32(off + 0, true);
+      const nameLen = bv.getUint32(off + 4, true);
+      const dataOff = bv.getUint32(off + 8, true);
+      const dataLen = bv.getUint32(off + 12, true);
+      const name = decoder.decode(u8.subarray(namesSectionOff + nameOff, namesSectionOff + nameOff + nameLen));
+      fileBytes.set(name, u8.subarray(dataOff, dataOff + dataLen));
+    }
+    onProgress?.(`bundle parsed: ${fileBytes.size} files`);
+
+    const floorBytes = fileBytes.get("floor.xml");
+    const flyBytes = fileBytes.get("fruitfly.xml");
+    if (!floorBytes || !flyBytes) {
+      throw new Error("flybody bundle missing floor.xml or fruitfly.xml");
+    }
+    const floorText = decoder.decode(floorBytes);
+    const flyText = decoder.decode(flyBytes);
 
     // Mesh refs come from fruitfly.xml; floor.xml only has texture refs.
     const meshFiles = Array.from(
@@ -62,41 +101,23 @@ export class Physics {
           .filter((f) => f.endsWith(".obj")),
       ),
     );
-    const stats = await cacheStats();
-    onProgress?.(`fetching ${meshFiles.length} meshes (IDB cached: ${stats.count}, ${(stats.bytes / 1e6).toFixed(0)} MB)`);
 
     p.vfs = new p.mujoco.MjVFS();
-    const CONCURRENCY = 4;
-    let inFlight = 0, idx = 0, completed = 0, totalBytes = 0;
-    const t0 = performance.now();
-    await new Promise<void>((resolve, reject) => {
-      const next = () => {
-        while (inFlight < CONCURRENCY && idx < meshFiles.length) {
-          const file = meshFiles[idx++];
-          inFlight++;
-          getOrFetch(file, `${base}/${file}`)
-            .then((buf) => {
-              const u8 = new Uint8Array(buf);
-              p.vfs.addBuffer(file, u8);
-              completed++;
-              totalBytes += buf.byteLength;
-              if (completed % 20 === 0 || completed === meshFiles.length) {
-                onProgress?.(`fetched ${completed}/${meshFiles.length} meshes (${(totalBytes / 1e6).toFixed(0)} MB)`);
-              }
-              inFlight--;
-              if (idx >= meshFiles.length && inFlight === 0) resolve();
-              else next();
-            })
-            .catch(reject);
-        }
-      };
-      next();
-    });
-    onProgress?.(`fetched all meshes in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
+    let totalBytes = 0;
+    for (const file of meshFiles) {
+      const data = fileBytes.get(file);
+      if (!data) {
+        throw new Error(`flybody bundle missing mesh: ${file}`);
+      }
+      p.vfs.addBuffer(file, data);
+      totalBytes += data.byteLength;
+    }
+    onProgress?.(`loaded ${meshFiles.length} meshes from bundle (${(totalBytes / 1e6).toFixed(0)} MB)`);
+    void base;  // base URL retained for backward-compat env var; unused now.
 
     // The compiler resolves `<include file="fruitfly.xml"/>` from the
     // VFS, so we have to register fruitfly.xml there as well.
-    p.vfs.addBuffer("fruitfly.xml", new TextEncoder().encode(flyText));
+    p.vfs.addBuffer("fruitfly.xml", flyBytes);
 
     onProgress?.("compiling MJCF (synchronous; tab may freeze ~5-15s)");
     const tCompile = performance.now();

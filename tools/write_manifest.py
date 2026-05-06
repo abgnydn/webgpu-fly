@@ -38,6 +38,7 @@ TRACKED = [
     "walking-policy.bin",
     "walking-obs-norm.bin",
     "walking-ref.bin",
+    "flybody.bundle.bin",
 ]
 
 

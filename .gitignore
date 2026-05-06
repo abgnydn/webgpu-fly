@@ -52,6 +52,10 @@ data/raw/flybody-mocap/
 # flybody assets — vendored from TuragaLab/flybody main (149 MB)
 public/flybody/*.obj
 public/flybody/meshes.txt
+# Concatenated bundle of flybody assets (140 MB), regenerable via
+# tools/bake_flybody_bundle.py. Read by physics.ts in one IDB
+# transaction instead of 87 per-file fetches.
+public/flybody.bundle.bin
 
 # Snapshots
 snapshots/

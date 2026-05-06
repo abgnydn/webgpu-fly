@@ -7,7 +7,7 @@
 // Stops the user from being the QA loop: one `npm run test:e2e`
 // reports PASS/FAIL for every behavior in the demo.
 
-import { test, expect, Page } from "@playwright/test";
+import { test, expect, type Page } from "./fixtures";
 
 const READY_MSG = "FlySim ready";
 

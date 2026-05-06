@@ -133,6 +133,12 @@ async function main() {
   // Missing manifest (local dev pre-build) → no version stamps, plain
   // unversioned URLs.
   const versionFor: VersionFor = await loadManifest();
+  // Expose flybody bundle version on the global so physics.ts can read it.
+  // (physics.ts doesn't have access to the manifest closure directly.)
+  const bundleVer = versionFor("flybody.bundle.bin");
+  if (bundleVer) {
+    (globalThis as unknown as { __flybodyBundleVersion?: string }).__flybodyBundleVersion = bundleVer.replace(/^\?v=/, "");
+  }
 
   // Allow the deploy to point at an external host for brain.bin /
   // brain.meta.json (Vercel Hobby's 50 MB-per-file limit blocks the

@@ -68,15 +68,17 @@ export async function getOrFetch(key: string, url: string): Promise<ArrayBuffer>
   const r = await fetch(url);
   if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
   const bytes = await r.arrayBuffer();
-  try {
-    await idbPut(key, {
-      etag: r.headers.get("ETag"),
-      size: bytes.byteLength,
-      bytes,
-    });
-  } catch {
-    // Ignore quota / write errors — we already have the bytes in memory.
-  }
+  // Fire-and-forget the IDB write — we have the bytes in memory and
+  // the caller doesn't need to block on the cache populating. For
+  // 125 MB blobs the IDB write is ~30 s and was dominating cold-load
+  // wall time.
+  idbPut(key, {
+    etag: r.headers.get("ETag"),
+    size: bytes.byteLength,
+    bytes,
+  }).catch(() => {
+    // Ignore quota / write errors — we already have the bytes.
+  });
   return bytes;
 }
 
