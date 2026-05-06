@@ -1017,6 +1017,8 @@ async function main() {
       try {
         trainedWalker = await loadWalkingPolicy(policyUrl);
         log(`trained walker loaded: ${trainedWalker.obsDim}-dim obs → ${trainedWalker.actDim}-dim action (Vaxenburg et al. 2025)`, "ok");
+        // Expose for e2e introspection / diagnostic probes.
+        (window as unknown as { __walkingPolicyForTest?: WalkingPolicy }).__walkingPolicyForTest = trainedWalker;
       } catch (e) {
         log(`policy load failed: ${(e as Error).message}`, "err");
         return;
@@ -1024,6 +1026,7 @@ async function main() {
       try {
         trainedObsNorm = await loadWalkingObsNorm(obsNormUrl);
         log(`obs normalizer loaded (${trainedObsNorm.mean.length}-dim from flybody env rollout)`, "ok");
+        (window as unknown as { __obsNormForTest?: ObsNormStats }).__obsNormForTest = trainedObsNorm;
       } catch (e) {
         log(`obs normalizer not available, falling back to per-call LN: ${(e as Error).message}`, "warn");
       }
@@ -1064,13 +1067,15 @@ async function main() {
   (room as any).drivePolicyTick = () => {
     if (trainedActiveTargetCmS <= 0 || !trainedWalker || !physics) return false;
     physics.buildWalkingObservation(obsScratch, trainedActiveTargetCmS);
-    // Per-call LayerNorm over the full 741-vec is the most stable
-    // substitute we have for the trained env's ObservationActionNorm.
-    // The rollout-derived per-channel stats (when available) sometimes
-    // make things worse because random-action rollouts produce a much
-    // wider distribution than the policy actually sees in deployment.
-    const actions = trainedWalker.act(obsScratch, undefined,
-      trainedObsNorm ? { obsNorm: trainedObsNorm } : { inputLayerNorm: true });
+    // RAW obs, no normalization. The walking checkpoint shipped on
+    // Figshare 25309105 has only the 15 policy-network variables —
+    // no ObservationActionNorm running stats. Empirically, feeding
+    // raw obs reproduces native flybody's action magnitudes
+    // (|max|≈6, |mean|≈2, matching native exactly), while the
+    // rollout-derived obs-norm.bin we computed ourselves blows up
+    // outputs to |max|≈11000 (4 orders of magnitude OOD). The
+    // trained policy was clearly evaluated against raw obs.
+    const actions = trainedWalker.act(obsScratch);
     physics.applyTrainedWalkerActions(actions);
     // Track action stats for e2e introspection — low |actions| means
     // policy is producing weak commands (stand-still); saturated to ±1

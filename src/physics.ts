@@ -445,6 +445,29 @@ export class Physics {
     forces: ({ adr: number; dim: number } | null)[];
     touches: ({ adr: number; dim: number } | null)[];
   } = { accel: null, gyro: null, vel: null, forces: [], touches: [] };
+  /** Buffered sensor readings — flybody observables are aggregated
+   * with `aggregator='mean'` and `buffer_size = control_timestep /
+   * physics_timestep = 10`. We accumulate sensordata each substep
+   * inside step() and divide by count when buildWalkingObservation
+   * reads them. Without this the policy gets instantaneous-snapshot
+   * sensor values, which is OOD for a policy trained on averaged
+   * readings, and the network produces saturated garbage actions
+   * (|max|=17000+ vs native's |max|=6.5).
+   *
+   * The buffer is reset at the start of each physics.step() call —
+   * it captures the average sensor reading over THAT call's
+   * substep run. The trained walker calls buildWalkingObservation
+   * BEFORE physics.step, so the buffer is read for the previous
+   * step's substeps and then refilled during this step.
+   */
+  sensorBuf = {
+    accel:   new Float32Array(3),
+    gyro:    new Float32Array(3),
+    vel:     new Float32Array(3),
+    forces:  new Float32Array(6 * 3),
+    touches: new Float32Array(6),
+    count: 0,
+  };
   /** SITE IDs for the 7 appendages whose egocentric xpos forms the
    * appendages_pos observable (6 claw tips + head site). */
   appendageSiteIds: number[] = [];
@@ -531,6 +554,16 @@ export class Physics {
   step(substeps = 1) {
     const assist = Physics.kinematicAssistEnabled;
     const hasCmd = assist && (Math.abs(this.fwdCmd) > 0.01 || Math.abs(this.turnCmd) > 0.01);
+    // Reset sensor accumulators — this step's substeps fill them; the
+    // next buildWalkingObservation reads the mean.
+    this.sensorBuf.accel.fill(0);
+    this.sensorBuf.gyro.fill(0);
+    this.sensorBuf.vel.fill(0);
+    this.sensorBuf.forces.fill(0);
+    this.sensorBuf.touches.fill(0);
+    this.sensorBuf.count = 0;
+    const sensordata = this.data.sensordata as Float32Array;
+    const sIdx = this.sensorIdx;
     for (let s = 0; s < substeps; s++) {
       const qpos = this.data.qpos as Float64Array;
       const qvel = this.data.qvel as Float64Array;
@@ -539,8 +572,6 @@ export class Physics {
         qvel[4] *= 0.85;   // roll damping
       }
       if (hasCmd && qpos && qvel && qpos.length >= 7) {
-        // Legacy assist path. Off by default; opt-in for users who
-        // want a fast watchable demo at the cost of physical honesty.
         const qw = qpos[3], qx = qpos[4], qy = qpos[5], qz = qpos[6];
         const fx = 1 - 2 * (qy * qy + qz * qz);
         const fy = 2 * (qx * qy + qw * qz);
@@ -550,6 +581,36 @@ export class Physics {
         qvel[5] = this.turnCmd * 6.0;
       }
       this.mujoco.mj_step(this.model, this.data);
+      // Sensor buffering: accumulate readings for averaging in obs.
+      if (sIdx.accel) {
+        const a = sIdx.accel.adr;
+        this.sensorBuf.accel[0] += sensordata[a + 0];
+        this.sensorBuf.accel[1] += sensordata[a + 1];
+        this.sensorBuf.accel[2] += sensordata[a + 2];
+      }
+      if (sIdx.gyro) {
+        const a = sIdx.gyro.adr;
+        this.sensorBuf.gyro[0] += sensordata[a + 0];
+        this.sensorBuf.gyro[1] += sensordata[a + 1];
+        this.sensorBuf.gyro[2] += sensordata[a + 2];
+      }
+      if (sIdx.vel) {
+        const a = sIdx.vel.adr;
+        this.sensorBuf.vel[0] += sensordata[a + 0];
+        this.sensorBuf.vel[1] += sensordata[a + 1];
+        this.sensorBuf.vel[2] += sensordata[a + 2];
+      }
+      for (let i = 0; i < 6; i++) {
+        const f = sIdx.forces[i];
+        if (f) {
+          this.sensorBuf.forces[3 * i + 0] += sensordata[f.adr + 0];
+          this.sensorBuf.forces[3 * i + 1] += sensordata[f.adr + 1];
+          this.sensorBuf.forces[3 * i + 2] += sensordata[f.adr + 2];
+        }
+        const t = sIdx.touches[i];
+        if (t) this.sensorBuf.touches[i] += sensordata[t.adr];
+      }
+      this.sensorBuf.count++;
     }
   }
 
@@ -668,12 +729,18 @@ export class Physics {
     const xmat = data.xmat as Float64Array;
 
     // ---- 0..2: accelerometer ------------------------------------------
+    // All sensor channels read from the BUFFERED MEAN over the last
+    // physics.step() substep run (filled by step()). flybody's
+    // observables use buffer_size = control_timestep / physics_timestep
+    // = 10 with aggregator='mean'. Without averaging we feed the policy
+    // instantaneous-snapshot readings, which is OOD vs training.
+    const buf = this.sensorBuf;
+    const bufN = buf.count > 0 ? buf.count : 1;
     let off = 0;
     if (this.sensorIdx.accel) {
-      const { adr } = this.sensorIdx.accel;
-      obs[off + 0] = sensordata[adr + 0];
-      obs[off + 1] = sensordata[adr + 1];
-      obs[off + 2] = sensordata[adr + 2];
+      obs[off + 0] = buf.accel[0] / bufN;
+      obs[off + 1] = buf.accel[1] / bufN;
+      obs[off + 2] = buf.accel[2] / bufN;
     }
     off += 3;
     // ---- 3..61: actuator_activation (59 in MJCF declaration order) ---
@@ -711,22 +778,20 @@ export class Physics {
       }
     }
     off += 21;
-    // ---- 83..100: force (6×3) ----------------------------------------
+    // ---- 83..100: force (6×3, buffered mean) -------------------------
     for (let i = 0; i < 6; i++) {
-      const s = this.sensorIdx.forces[i];
-      if (s) {
-        obs[off + 3 * i + 0] = sensordata[s.adr + 0];
-        obs[off + 3 * i + 1] = sensordata[s.adr + 1];
-        obs[off + 3 * i + 2] = sensordata[s.adr + 2];
+      if (this.sensorIdx.forces[i]) {
+        obs[off + 3 * i + 0] = buf.forces[3 * i + 0] / bufN;
+        obs[off + 3 * i + 1] = buf.forces[3 * i + 1] / bufN;
+        obs[off + 3 * i + 2] = buf.forces[3 * i + 2] / bufN;
       }
     }
     off += 18;
-    // ---- 101..103: gyro ---------------------------------------------
+    // ---- 101..103: gyro (buffered mean) -----------------------------
     if (this.sensorIdx.gyro) {
-      const { adr } = this.sensorIdx.gyro;
-      obs[off + 0] = sensordata[adr + 0];
-      obs[off + 1] = sensordata[adr + 1];
-      obs[off + 2] = sensordata[adr + 2];
+      obs[off + 0] = buf.gyro[0] / bufN;
+      obs[off + 1] = buf.gyro[1] / bufN;
+      obs[off + 2] = buf.gyro[2] / bufN;
     }
     off += 3;
     // ---- 104..188: joints_pos (85) ----------------------------------
@@ -831,18 +896,16 @@ export class Physics {
       }
       off += 260;
     }
-    // ---- 729..734: touch (6) -----------------------------------------
+    // ---- 729..734: touch (6, buffered mean) -------------------------
     for (let i = 0; i < 6; i++) {
-      const s = this.sensorIdx.touches[i];
-      obs[off + i] = s ? sensordata[s.adr] : 0;
+      obs[off + i] = this.sensorIdx.touches[i] ? buf.touches[i] / bufN : 0;
     }
     off += 6;
-    // ---- 735..737: velocimeter --------------------------------------
+    // ---- 735..737: velocimeter (buffered mean) ----------------------
     if (this.sensorIdx.vel) {
-      const { adr } = this.sensorIdx.vel;
-      obs[off + 0] = sensordata[adr + 0];
-      obs[off + 1] = sensordata[adr + 1];
-      obs[off + 2] = sensordata[adr + 2];
+      obs[off + 0] = buf.vel[0] / bufN;
+      obs[off + 1] = buf.vel[1] / bufN;
+      obs[off + 2] = buf.vel[2] / bufN;
     }
     off += 3;
     // ---- 738..740: world_zaxis (z-axis of world in body frame) ------
