@@ -464,21 +464,28 @@ export class Physics {
   private fwdCmd = 0;
   private turnCmd = 0;
 
+  /** When true, write the brain's motor command directly into the
+   * freejoint translational+yaw qvel. Cheats over MuJoCo physics —
+   * the legs visibly step but contribute nothing to body motion.
+   * Useful as a fallback when leg actuators don't produce enough
+   * thrust in browser mujoco_wasm for a watchable demo. Default off:
+   * the demo is honest, body motion comes from leg actuators alone.
+   * Toggleable from main.ts via `(window as any).__cpgKinematicAssist`. */
+  static kinematicAssistEnabled = false;
+
   /** Step physics N times.
    *
-   * Body is driven by leg/wing actuators (visible in the leg motion
-   * you can see), PLUS a soft kinematic assist on the freejoint
-   * scaled by motor command. The leg actuators alone don't produce
-   * enough thrust in browser mujoco_wasm to make walking visible at
-   * normal viewing scale; the kinematic assist picks up that slack.
-   * Crucially the assist is PROPORTIONAL to the brain's motor command
-   * — when no DN fires, the term is zero and the body sits.
+   * Body is driven by leg/wing actuators only — leg motion produces
+   * ground reaction, ground reaction moves body. No qvel writes on
+   * the freejoint translation or yaw (was a kinematic-assist hack
+   * before; toggleable now via Physics.kinematicAssistEnabled).
    *
    * Stabilizer: pitch/roll angular damper (×0.85 per substep) keeps
    * the body upright without pinning orientation; the fly can still
    * tip if it genuinely loses balance. */
   step(substeps = 1) {
-    const hasCmd = Math.abs(this.fwdCmd) > 0.01 || Math.abs(this.turnCmd) > 0.01;
+    const assist = Physics.kinematicAssistEnabled;
+    const hasCmd = assist && (Math.abs(this.fwdCmd) > 0.01 || Math.abs(this.turnCmd) > 0.01);
     for (let s = 0; s < substeps; s++) {
       const qpos = this.data.qpos as Float64Array;
       const qvel = this.data.qvel as Float64Array;
@@ -487,27 +494,14 @@ export class Physics {
         qvel[4] *= 0.85;   // roll damping
       }
       if (hasCmd && qpos && qvel && qpos.length >= 7) {
-        // World-frame heading: rotate body +x (head direction in
-        // flybody's MJCF) by the freejoint quaternion.
+        // Legacy assist path. Off by default; opt-in for users who
+        // want a fast watchable demo at the cost of physical honesty.
         const qw = qpos[3], qx = qpos[4], qy = qpos[5], qz = qpos[6];
         const fx = 1 - 2 * (qy * qy + qz * qz);
         const fy = 2 * (qx * qy + qw * qz);
-        const v = 1.0 * this.fwdCmd;  // 1 cm/s per unit fwd command
+        const v = 1.0 * this.fwdCmd;
         qvel[0] = fx * v;
         qvel[1] = fy * v;
-        // Yaw gain calibrated so a closed-loop sweep at turn=±0.5
-        // can find the target inside one camera-tick window. With
-        // mujoco dt=0.1ms × 32 substeps × ~15 RAF/sec = ~48 ms sim
-        // per closed-loop tick, gain of 6 gives ~17°/tick at |turn|=0.5.
-        //
-        // Sign: turnCmd > 0 means "target on fly's left, turn LEFT to
-        // face it" (matches retinalSample()'s positive-angle = left
-        // convention and vnc.ts's visual reflex). In MuJoCo z-up,
-        // counter-clockwise yaw (looking down) = left turn = positive
-        // qvel[5]. Old code had this negated which produced a
-        // bug-feedback loop: fly saw target on left, turned right,
-        // target moved further left, reflex got stronger, fly spun
-        // away from target.
         qvel[5] = this.turnCmd * 6.0;
       }
       this.mujoco.mj_step(this.model, this.data);
@@ -708,27 +702,48 @@ export class Physics {
     }
     off += 85;
     // ---- 274..468: ref_displacement (65×3) ---------------------------
-    // Synthetic forward trajectory: each future frame advances along
-    // the body's heading at targetSpeedCmPerS for 1/50 sec.
+    // Procedural walking trajectory: forward translation at
+    // targetSpeedCmPerS, plus body-natural oscillations from real
+    // fly walking — lateral sway and vertical bobbing at the gait
+    // frequency. Without these the trained policy is asked to track a
+    // perfectly straight ref it never saw in training (real fly mocap
+    // always has step-induced wobble), which it tracks poorly.
+    //
+    // Real fly walking parameters (Mendes et al. 2013, Wosnitza et al.
+    // 2013): step freq ≈ 8-12 Hz, lateral sway amplitude ≈ 0.02 cm,
+    // vertical bob ≈ 0.01 cm at 2× step freq (body bobs twice per
+    // gait cycle since heel-strike alternates legs). Phase locked to
+    // sim time so ref is continuous across calls.
     const dtFrame = 1 / 50;
     const stepCm = targetSpeedCmPerS * dtFrame;
+    const STEP_FREQ_HZ = 10;
+    const LAT_AMP_CM = 0.02;
+    const BOB_AMP_CM = 0.01;
+    const tNow = (this.data.time as number) ?? 0;
     for (let f = 0; f < 65; f++) {
-      // Future frames in body-local frame: forward = +x, lateral = 0,
-      // vertical = 0. Reference is body-relative so heading rotation
-      // doesn't enter.
+      const tFut = tNow + (f + 1) * dtFrame;
+      const stepPhase = 2 * Math.PI * STEP_FREQ_HZ * tFut;
+      const stepPhase0 = 2 * Math.PI * STEP_FREQ_HZ * tNow;
+      // Subtract phase-at-now so ref starts at zero displacement and
+      // accumulates the oscillation as future progresses.
       obs[off + 3 * f + 0] = (f + 1) * stepCm;
-      obs[off + 3 * f + 1] = 0;
-      obs[off + 3 * f + 2] = 0;
+      obs[off + 3 * f + 1] = LAT_AMP_CM * (Math.sin(stepPhase) - Math.sin(stepPhase0));
+      obs[off + 3 * f + 2] = BOB_AMP_CM * (Math.cos(2 * stepPhase) - Math.cos(2 * stepPhase0));
     }
     off += 195;
     // ---- 469..728: ref_root_quat (65×4) ------------------------------
-    // Identity quaternion for each frame — fly doesn't rotate during
-    // straight walking. (qw, qx, qy, qz) order matches MJ.
+    // Tiny yaw wobble at gait frequency (~1-2°). Real fly walking has
+    // body yaw oscillation in step with legs; identity quat (the old
+    // synthesis) drives the policy off-distribution.
+    const YAW_AMP_RAD = (1.5 * Math.PI) / 180;
     for (let f = 0; f < 65; f++) {
-      obs[off + 4 * f + 0] = 1;
+      const tFut = tNow + (f + 1) * dtFrame;
+      const yaw = YAW_AMP_RAD * Math.sin(2 * Math.PI * STEP_FREQ_HZ * tFut);
+      // Quaternion for rotation about z-axis only: (cos(yaw/2), 0, 0, sin(yaw/2)).
+      obs[off + 4 * f + 0] = Math.cos(yaw / 2);
       obs[off + 4 * f + 1] = 0;
       obs[off + 4 * f + 2] = 0;
-      obs[off + 4 * f + 3] = 0;
+      obs[off + 4 * f + 3] = Math.sin(yaw / 2);
     }
     off += 260;
     // ---- 729..734: touch (6) -----------------------------------------
