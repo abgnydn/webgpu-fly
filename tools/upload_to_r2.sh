@@ -26,6 +26,9 @@
 #   VITE_FLYBODY_URL     = https://<bucket>.<account>.r2.dev/flybody
 
 set -euo pipefail
+# Force C locale so printf "%.1f" gets `.` for decimal regardless of
+# the user's LANG (Turkish locale uses comma, breaks bc/printf parsing).
+export LC_ALL=C
 
 BUCKET="${R2_BUCKET:-webgpu-fly-assets}"
 
@@ -52,7 +55,7 @@ put() {
   size=$(stat -f "%z" "$path" 2>/dev/null || stat -c "%s" "$path")
   printf "  → %-32s (%6.1f MB)  → r2://%s/%s\n" \
     "$key" "$(echo "scale=1; $size / 1048576" | bc)" "$BUCKET" "$key"
-  wrangler r2 object put "$BUCKET/$key" \
+  npx --yes wrangler r2 object put "$BUCKET/$key" \
     --file "$path" \
     --content-type "$ctype" \
     --cache-control "$cc" \
