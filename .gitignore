@@ -43,6 +43,12 @@ data/flybody-policies/
 public/walking-obs-norm.bin
 data/flybody-spec.json
 
+# Real-fly walking reference trajectory baked from the Janelia mocap
+# dataset (Vaxenburg 2025 Figshare 25309105). Regenerable via
+# tools/bake_walking_ref.py from data/raw/flybody-mocap/.
+public/walking-ref.bin
+data/raw/flybody-mocap/
+
 # flybody assets — vendored from TuragaLab/flybody main (149 MB)
 public/flybody/*.obj
 public/flybody/meshes.txt

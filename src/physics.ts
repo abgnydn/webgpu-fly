@@ -393,6 +393,11 @@ export class Physics {
    * appendages. */
   walkingQposAdr: Int32Array = new Int32Array(0);
   walkingDofAdr: Int32Array = new Int32Array(0);
+  /** Optional baked real-fly walking reference (from
+   * tools/bake_walking_ref.py). When set + opt-in flag, drives
+   * ref_displacement / ref_root_quat in buildWalkingObservation. */
+  walkingRef: { qpos: Float32Array; numFrames: number; dt: number } | null = null;
+  walkingRefStep = 0;
   /** Sensor adr + dim cache used by the trained-walker observation
    * builder. */
   sensorIdx: {
@@ -704,33 +709,85 @@ export class Physics {
     }
     off += 85;
     // ---- 274..468: ref_displacement (65×3) ---------------------------
-    // Synthetic forward trajectory: each future frame advances along
-    // the body's heading at targetSpeedCmPerS for 1/50 sec.
-    // Body-natural oscillations (lateral sway, vertical bob, yaw
-    // wobble) were tried in the procedural-ref experiment (commit
-    // 88d4ba2) and reverted: even small amplitudes (0.005 cm) drove
-    // the trained walker off-distribution and the body went backward
-    // instead of forward in the e2e (-0.031 cm in 4s vs expected
-    // +0.5 cm). Real mocap from datasets_walking-imitation.zip is
-    // the proper fix — straight-line ref is fine until then.
-    const dtFrame = 1 / 50;
-    const stepCm = targetSpeedCmPerS * dtFrame;
-    for (let f = 0; f < 65; f++) {
-      obs[off + 3 * f + 0] = (f + 1) * stepCm;
-      obs[off + 3 * f + 1] = 0;
-      obs[off + 3 * f + 2] = 0;
-    }
-    off += 195;
     // ---- 469..728: ref_root_quat (65×4) ------------------------------
-    // Identity quaternion for each frame — fly doesn't rotate during
-    // straight walking. (qw, qx, qy, qz) order matches MJ.
-    for (let f = 0; f < 65; f++) {
-      obs[off + 4 * f + 0] = 1;
-      obs[off + 4 * f + 1] = 0;
-      obs[off + 4 * f + 2] = 0;
-      obs[off + 4 * f + 3] = 0;
+    // Two paths:
+    //  (a) Default: synthetic straight-line forward ref + identity quat.
+    //      Robust, matches what's been e2e-tested.
+    //  (b) Opt-in: replay real fly mocap from public/walking-ref.bin
+    //      (baked by tools/bake_walking_ref.py from the Vaxenburg 2025
+    //      mocap dataset). Closer to the policy's training distribution.
+    //      Toggle:  (window as any).__walkingRefFromMocap = true
+    const useMocap = this.walkingRef !== null
+      && (typeof globalThis !== "undefined"
+        && (globalThis as { __walkingRefFromMocap?: boolean }).__walkingRefFromMocap === true);
+
+    if (useMocap) {
+      const ref = this.walkingRef!;
+      const T = ref.numFrames;
+      const step = this.walkingRefStep % T;
+      const px = ref.qpos[step * 7 + 0];
+      const py = ref.qpos[step * 7 + 1];
+      const pz = ref.qpos[step * 7 + 2];
+      const qw = ref.qpos[step * 7 + 3];
+      const qx = ref.qpos[step * 7 + 4];
+      const qy = ref.qpos[step * 7 + 5];
+      const qz = ref.qpos[step * 7 + 6];
+      // Mocap pose at `step`: rotation matrix (mocap_R) and inverse quat.
+      // R^T columns = mocap body x/y/z axes in world; we use R^T to
+      // express world-frame deltas in mocap's body frame at step.
+      const r00 = 1 - 2 * (qy * qy + qz * qz);
+      const r01 = 2 * (qx * qy - qw * qz);
+      const r02 = 2 * (qx * qz + qw * qy);
+      const r10 = 2 * (qx * qy + qw * qz);
+      const r11 = 1 - 2 * (qx * qx + qz * qz);
+      const r12 = 2 * (qy * qz - qw * qx);
+      const r20 = 2 * (qx * qz - qw * qy);
+      const r21 = 2 * (qy * qz + qw * qx);
+      const r22 = 1 - 2 * (qx * qx + qy * qy);
+      // q_inv(mocap_q) — used to express mocap_q[step+f] in body frame.
+      const iqw = qw, iqx = -qx, iqy = -qy, iqz = -qz;
+      let dispOff = off;
+      let quatOff = off + 195;
+      for (let f = 0; f < 65; f++) {
+        const idx = ((step + f) % T) * 7;
+        const fx = ref.qpos[idx + 0] - px;
+        const fy = ref.qpos[idx + 1] - py;
+        const fz = ref.qpos[idx + 2] - pz;
+        // R^T applied to world-frame delta = body-frame future motion.
+        // R^T row i is column i of R = (r0i, r1i, r2i).
+        obs[dispOff + 3 * f + 0] = r00 * fx + r10 * fy + r20 * fz;
+        obs[dispOff + 3 * f + 1] = r01 * fx + r11 * fy + r21 * fz;
+        obs[dispOff + 3 * f + 2] = r02 * fx + r12 * fy + r22 * fz;
+        // q_local = q_inv(mocap_q[step]) ⊗ mocap_q[step+f]
+        const fqw = ref.qpos[idx + 3];
+        const fqx = ref.qpos[idx + 4];
+        const fqy = ref.qpos[idx + 5];
+        const fqz = ref.qpos[idx + 6];
+        obs[quatOff + 4 * f + 0] = iqw * fqw - iqx * fqx - iqy * fqy - iqz * fqz;
+        obs[quatOff + 4 * f + 1] = iqw * fqx + iqx * fqw + iqy * fqz - iqz * fqy;
+        obs[quatOff + 4 * f + 2] = iqw * fqy - iqx * fqz + iqy * fqw + iqz * fqx;
+        obs[quatOff + 4 * f + 3] = iqw * fqz + iqx * fqy - iqy * fqx + iqz * fqw;
+      }
+      this.walkingRefStep = (this.walkingRefStep + 1) % T;
+      off += 195 + 260;
+    } else {
+      // Default: synthetic forward straight-line ref + identity quat.
+      const dtFrame = 1 / 50;
+      const stepCm = targetSpeedCmPerS * dtFrame;
+      for (let f = 0; f < 65; f++) {
+        obs[off + 3 * f + 0] = (f + 1) * stepCm;
+        obs[off + 3 * f + 1] = 0;
+        obs[off + 3 * f + 2] = 0;
+      }
+      off += 195;
+      for (let f = 0; f < 65; f++) {
+        obs[off + 4 * f + 0] = 1;
+        obs[off + 4 * f + 1] = 0;
+        obs[off + 4 * f + 2] = 0;
+        obs[off + 4 * f + 3] = 0;
+      }
+      off += 260;
     }
-    off += 260;
     // ---- 729..734: touch (6) -----------------------------------------
     for (let i = 0; i < 6; i++) {
       const s = this.sensorIdx.touches[i];

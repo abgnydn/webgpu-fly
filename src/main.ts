@@ -8,6 +8,7 @@ import { Physics } from "./physics";
 import { motorFromBrain, resetVnc, vncSnapshot, type MotorContext } from "./vnc";
 import { GaitEvolver } from "./evolution";
 import { loadWalkingPolicy, loadWalkingObsNorm, type WalkingPolicy, type ObsNormStats } from "./walking-policy";
+import { loadWalkingRef } from "./walking-ref";
 import { loadManifest, type VersionFor } from "./manifest";
 
 const SUPER_CLASS = [
@@ -1019,6 +1020,21 @@ async function main() {
         log(`obs normalizer loaded (${trainedObsNorm.mean.length}-dim from flybody env rollout)`, "ok");
       } catch (e) {
         log(`obs normalizer not available, falling back to per-call LN: ${(e as Error).message}`, "warn");
+      }
+      // Optional: real-fly walking reference (Vaxenburg 2025 mocap).
+      // Opt-in via window.__walkingRefFromMocap = true. Default ref
+      // is the synthetic forward line — keeping the demo unchanged
+      // unless explicitly enabled.
+      if (physics) {
+        const refUrl = (import.meta.env.VITE_WALKING_REF_URL ?? "/walking-ref.bin")
+          + versionFor("walking-ref.bin");
+        try {
+          const ref = await loadWalkingRef(refUrl);
+          physics.walkingRef = { qpos: ref.qpos, numFrames: ref.numFrames, dt: ref.dt };
+          log(`walking ref loaded: ${ref.numFrames} frames at ${(1/ref.dt).toFixed(0)} Hz (Vaxenburg 2025 mocap; opt-in via __walkingRefFromMocap)`, "ok");
+        } catch (e) {
+          log(`walking ref unavailable (${(e as Error).message}); using synthetic straight line`, "warn");
+        }
       }
     }
     // 1.0 cm/s is the value where the policy reliably produces

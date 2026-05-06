@@ -37,6 +37,7 @@ TRACKED = [
     "vnc.meta.json",
     "walking-policy.bin",
     "walking-obs-norm.bin",
+    "walking-ref.bin",
 ]
 
 
