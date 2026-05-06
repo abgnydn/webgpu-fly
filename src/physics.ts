@@ -125,21 +125,38 @@ export class Physics {
     p.data = new p.mujoco.MjData(p.model);
     onProgress?.(`MJCF compiled in ${((performance.now() - tCompile) / 1000).toFixed(1)} s`);
 
-    // Initialise to flybody's canonical rest pose. From
-    // TuragaLab/flybody/flybody/fruitfly/fruitfly.py:
-    //   - _SPAWN_POS = (0, 0, 0.1278): thorax xyz on the floor surface.
-    //   - Each joint's qpos is set to model.qpos_spring (its natural
-    //     rest target) — without this, joints sit at zero and the legs
-    //     splay out instead of standing.
+    // Initialise to flybody's canonical rest pose, matching native
+    // flybody/fruitfly/fruitfly.py:initialize_episode exactly:
+    //   - mj_resetData → joints at MJCF default (zero for our model)
+    //   - root xyz = _SPAWN_POS = (0, 0, 0.1278)
+    //   - root quat = identity
+    //   - ONLY wing joints set to qpos_spring (and only when wings
+    //     are retracted, which is the trained-walking config).
+    // The previous code did `qpos.set(qpos_spring)` for ALL joints —
+    // legs included — which started the body in a non-rest pose the
+    // trained policy never saw at episode start. That explains a big
+    // chunk of why our trained walker was producing |action max|=18000
+    // (raw policy output saturated way beyond [-1, 1] because the
+    // input distribution was OOD).
     p.mujoco.mj_resetData(p.model, p.data);
     const qpos = p.data.qpos as Float64Array;
-    const qposSpring = p.model.qpos_spring as Float64Array;
-    if (qposSpring && qposSpring.length === qpos.length) {
-      qpos.set(qposSpring);
-    }
     if (qpos.length >= 7) {
       qpos[0] = 0; qpos[1] = 0; qpos[2] = 0.1278;          // _SPAWN_POS
       qpos[3] = 1; qpos[4] = 0; qpos[5] = 0; qpos[6] = 0;  // identity quat
+    }
+    // Wing-retract: copy qpos_spring for the 6 wing joints (yaw/roll/
+    // pitch × left/right). Look them up by name — these are the only
+    // joints that get the spring rest applied during walking init.
+    const qposSpring = p.model.qpos_spring as Float64Array;
+    if (qposSpring && qposSpring.length === qpos.length) {
+      for (const side of ["left", "right"]) {
+        for (const dof of ["yaw", "roll", "pitch"]) {
+          const j = p.mujoco.mj_name2id(p.model, p.mujoco.mjtObj.mjOBJ_JOINT.value, `wing_${dof}_${side}`);
+          if (j < 0) continue;
+          const adr = (p.model.jnt_qposadr as Int32Array)[j];
+          if (adr >= 0 && adr < qpos.length) qpos[adr] = qposSpring[adr];
+        }
+      }
     }
     p.mujoco.mj_forward(p.model, p.data);
 
@@ -793,7 +810,12 @@ export class Physics {
       off += 195 + 260;
     } else {
       // Default: synthetic forward straight-line ref + identity quat.
-      const dtFrame = 1 / 50;
+      // dtFrame = flybody's _WALK_CONTROL_TIMESTEP (2 ms = 500 Hz). The
+      // trained policy was trained with this exact lookahead step, so
+      // feeding it 1/50 (which we used to use) made every ref value
+      // 10× larger than the policy expected — pushed obs out of
+      // distribution and the policy produced garbage actions.
+      const dtFrame = 0.002;
       const stepCm = targetSpeedCmPerS * dtFrame;
       for (let f = 0; f < 65; f++) {
         obs[off + 3 * f + 0] = (f + 1) * stepCm;
@@ -855,7 +877,14 @@ export class Physics {
     for (let i = 0; i < 59; i++) {
       const a = this.walkingActuatorIds[i];
       if (a < 0) continue;
-      ctrl[a] = this.walkingActuatorMid[i] + Math.tanh(actions[i]) * this.walkingActuatorHalf[i];
+      // Acme's CanonicalSpec wrapper does CLIP + linear rescale (NOT
+       // tanh). tanh under-saturates raw policy outputs in the [0.5, 5]
+      // range — which is where the policy spends most of its
+      // confidence — so legs got far less thrust than training. Native
+      // flybody achieves ~2.4 cm/s forward walking; our wasm was at
+      // ~0.04 cm/s before this fix.
+      const a_canonical = actions[i] < -1 ? -1 : actions[i] > 1 ? 1 : actions[i];
+      ctrl[a] = this.walkingActuatorMid[i] + a_canonical * this.walkingActuatorHalf[i];
     }
   }
 

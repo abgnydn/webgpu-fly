@@ -49,6 +49,9 @@ data/flybody-spec.json
 public/walking-ref.bin
 data/raw/flybody-mocap/
 
+# Native flybody diagnostic JSON dumps from tools/diag_native_walker.py.
+data/native-walker-*.json
+
 # flybody assets — vendored from TuragaLab/flybody main (149 MB)
 public/flybody/*.obj
 public/flybody/meshes.txt
