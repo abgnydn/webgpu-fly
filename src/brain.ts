@@ -1,6 +1,8 @@
 // brain.ts — parses public/brain.bin into typed views.
 // Format spec: tools/build_csr.py docstring (single source of truth).
 
+import { getOrFetch } from "./cache";
+
 export const MAGIC = "WGFLYBRN";
 export const VNC_MAGIC = "WGFLYVNC";
 export const HEADER_BYTES = 64;
@@ -32,9 +34,12 @@ export interface Brain {
 }
 
 export async function loadBrain(url: string = "/brain.bin"): Promise<Brain> {
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`failed to fetch ${url}: ${resp.status}`);
-  const buf = await resp.arrayBuffer();
+  // Route through IDB cache so reloads in the same browser session
+  // skip the ~125 MB network fetch (~30s on the dev server). Cache
+  // key is the full URL including ?v=<sha> from assets.json, so a
+  // new build naturally invalidates the cache (different URL = new
+  // entry). Old entries are eventually evicted under storage pressure.
+  const buf = await getOrFetch(url, url);
   return parseBrain(buf);
 }
 

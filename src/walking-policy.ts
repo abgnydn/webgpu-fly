@@ -80,9 +80,8 @@ export interface ObsNormStats {
 export async function loadWalkingObsNorm(
   url: string = (import.meta.env.VITE_WALKING_OBS_NORM_URL ?? "/walking-obs-norm.bin"),
 ): Promise<ObsNormStats> {
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`failed to fetch ${url}: ${resp.status}`);
-  const buf = await resp.arrayBuffer();
+  const { getOrFetch } = await import("./cache");
+  const buf = await getOrFetch(url, url);
   const dv = new DataView(buf);
   const n = dv.getUint32(0, true);
   // skip 4-byte reserved
@@ -124,9 +123,8 @@ export interface WalkingPolicy {
 export async function loadWalkingPolicy(
   url: string = (import.meta.env.VITE_WALKING_POLICY_URL ?? "/walking-policy.bin"),
 ): Promise<WalkingPolicy> {
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`failed to fetch ${url}: ${resp.status}`);
-  const buf = await resp.arrayBuffer();
+  const { getOrFetch } = await import("./cache");
+  const buf = await getOrFetch(url, url);
 
   const dv = new DataView(buf);
   const magic = String.fromCharCode(...new Uint8Array(buf, 0, 8));
