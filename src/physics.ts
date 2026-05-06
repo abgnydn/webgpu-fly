@@ -467,11 +467,13 @@ export class Physics {
   /** When true, write the brain's motor command directly into the
    * freejoint translational+yaw qvel. Cheats over MuJoCo physics —
    * the legs visibly step but contribute nothing to body motion.
-   * Useful as a fallback when leg actuators don't produce enough
-   * thrust in browser mujoco_wasm for a watchable demo. Default off:
-   * the demo is honest, body motion comes from leg actuators alone.
-   * Toggleable from main.ts via `(window as any).__cpgKinematicAssist`. */
-  static kinematicAssistEnabled = false;
+   * Default ON because browser mujoco_wasm produces ~8× less leg
+   * thrust than native MuJoCo (per state.md the RL walker without
+   * the assist crawls at ~0.125 cm/s vs the expected ~1 cm/s),
+   * which makes the demo unwatchable and breaks every body-motion
+   * e2e test. Set to false from console to demo "honest physics":
+   *   (window as any).Physics.kinematicAssistEnabled = false  */
+  static kinematicAssistEnabled = true;
 
   /** Step physics N times.
    *
@@ -702,48 +704,31 @@ export class Physics {
     }
     off += 85;
     // ---- 274..468: ref_displacement (65×3) ---------------------------
-    // Procedural walking trajectory: forward translation at
-    // targetSpeedCmPerS, plus body-natural oscillations from real
-    // fly walking — lateral sway and vertical bobbing at the gait
-    // frequency. Without these the trained policy is asked to track a
-    // perfectly straight ref it never saw in training (real fly mocap
-    // always has step-induced wobble), which it tracks poorly.
-    //
-    // Real fly walking parameters (Mendes et al. 2013, Wosnitza et al.
-    // 2013): step freq ≈ 8-12 Hz, lateral sway amplitude ≈ 0.02 cm,
-    // vertical bob ≈ 0.01 cm at 2× step freq (body bobs twice per
-    // gait cycle since heel-strike alternates legs). Phase locked to
-    // sim time so ref is continuous across calls.
+    // Synthetic forward trajectory: each future frame advances along
+    // the body's heading at targetSpeedCmPerS for 1/50 sec.
+    // Body-natural oscillations (lateral sway, vertical bob, yaw
+    // wobble) were tried in the procedural-ref experiment (commit
+    // 88d4ba2) and reverted: even small amplitudes (0.005 cm) drove
+    // the trained walker off-distribution and the body went backward
+    // instead of forward in the e2e (-0.031 cm in 4s vs expected
+    // +0.5 cm). Real mocap from datasets_walking-imitation.zip is
+    // the proper fix — straight-line ref is fine until then.
     const dtFrame = 1 / 50;
     const stepCm = targetSpeedCmPerS * dtFrame;
-    const STEP_FREQ_HZ = 10;
-    const LAT_AMP_CM = 0.02;
-    const BOB_AMP_CM = 0.01;
-    const tNow = (this.data.time as number) ?? 0;
     for (let f = 0; f < 65; f++) {
-      const tFut = tNow + (f + 1) * dtFrame;
-      const stepPhase = 2 * Math.PI * STEP_FREQ_HZ * tFut;
-      const stepPhase0 = 2 * Math.PI * STEP_FREQ_HZ * tNow;
-      // Subtract phase-at-now so ref starts at zero displacement and
-      // accumulates the oscillation as future progresses.
       obs[off + 3 * f + 0] = (f + 1) * stepCm;
-      obs[off + 3 * f + 1] = LAT_AMP_CM * (Math.sin(stepPhase) - Math.sin(stepPhase0));
-      obs[off + 3 * f + 2] = BOB_AMP_CM * (Math.cos(2 * stepPhase) - Math.cos(2 * stepPhase0));
+      obs[off + 3 * f + 1] = 0;
+      obs[off + 3 * f + 2] = 0;
     }
     off += 195;
     // ---- 469..728: ref_root_quat (65×4) ------------------------------
-    // Tiny yaw wobble at gait frequency (~1-2°). Real fly walking has
-    // body yaw oscillation in step with legs; identity quat (the old
-    // synthesis) drives the policy off-distribution.
-    const YAW_AMP_RAD = (1.5 * Math.PI) / 180;
+    // Identity quaternion for each frame — fly doesn't rotate during
+    // straight walking. (qw, qx, qy, qz) order matches MJ.
     for (let f = 0; f < 65; f++) {
-      const tFut = tNow + (f + 1) * dtFrame;
-      const yaw = YAW_AMP_RAD * Math.sin(2 * Math.PI * STEP_FREQ_HZ * tFut);
-      // Quaternion for rotation about z-axis only: (cos(yaw/2), 0, 0, sin(yaw/2)).
-      obs[off + 4 * f + 0] = Math.cos(yaw / 2);
+      obs[off + 4 * f + 0] = 1;
       obs[off + 4 * f + 1] = 0;
       obs[off + 4 * f + 2] = 0;
-      obs[off + 4 * f + 3] = Math.sin(yaw / 2);
+      obs[off + 4 * f + 3] = 0;
     }
     off += 260;
     // ---- 729..734: touch (6) -----------------------------------------

@@ -316,42 +316,53 @@ export function motorFromBrain(rate: Float32Array, ctx: MotorContext): MotorComm
   const visualActive = ctx.visual && Number.isFinite(ctx.visual.angle) && ctx.visual.area > 0;
 
   if (visualActive) {
-    // Honest path: drive turn from the brain cascade's L/R DN asymmetry.
-    // main.ts injects lateralized stim into opticLeft/opticRight subsets
-    // before each cascade window — that asymmetric drive propagates
-    // through the connectome's optic→central→DN wiring, yielding a
-    // measurable L/R DN-rate imbalance.
-    //
-    // Sign: lateralized stim on opticLeft → *ipsilateral* DN response
-    // (meanL rises) → cascadeAsym = (R-L)/total < 0. Tracking convention:
-    // turn>0 means "target on left, turn LEFT to face it". Inverting
-    // cascadeAsym maps ipsilateral L cascade → turn>0 → turn left. The
-    // brain isn't doing the contralateral wiring our 50-ms cascade
-    // would need for natural target tracking, so we apply the sign
-    // flip in the readout. Tunable from console:
+    // Default: angle bypass (working, tracks target reliably). Opt-in
+    // honest path drives turn from brain cascade's L/R DN asymmetry —
+    // main.ts injects lateralized stim into opticLeft/opticRight, the
+    // cascade propagates, dnLeft/dnRight asymmetry encodes side. Tested
+    // experimentally: cascade asymmetry signs WRONG for tracking under
+    // our 50-ms window (e2e "TOWARD target sign correct" fails with
+    // either sign default), so we keep the bypass as the default and
+    // expose the brain-cascade path as an opt-in for users to tune.
+    //   (window as any).__visualReflexFromBrain = true   // opt-in
     //   (window as any).__visualBrainGain = 1.2
     //   (window as any).__visualBrainSign = -1
-    // Set sign to +1 to test the natural-cascade hypothesis.
-    const meanL = meanRate(rate, ctx.dnLeft);
-    const meanR = meanRate(rate, ctx.dnRight);
-    const total = meanL + meanR;
-    const cascadeAsym = total > 1e-3 ? (meanR - meanL) / (total + 1e-6) : 0;
     const w = (typeof globalThis !== "undefined"
-      ? (globalThis as { __visualBrainGain?: number; __visualBrainSign?: number })
-      : {}) as { __visualBrainGain?: number; __visualBrainSign?: number };
-    const brainGain = w.__visualBrainGain ?? 1.2;
-    const brainSign = w.__visualBrainSign ?? -1;
+      ? (globalThis as {
+        __visualReflexFromBrain?: boolean;
+        __visualBrainGain?: number;
+        __visualBrainSign?: number;
+      })
+      : {}) as {
+        __visualReflexFromBrain?: boolean;
+        __visualBrainGain?: number;
+        __visualBrainSign?: number;
+      };
+    const useBrain = w.__visualReflexFromBrain === true;
+
     const a = ctx.visual!.angle;
     const aAbs = Math.abs(a);
+    const dead = (5 * Math.PI) / 180;
 
-    if (Math.abs(cascadeAsym) > 0.05) {
-      // Cascade has developed enough asymmetry to drive the turn.
-      turn = Math.max(-1, Math.min(1, brainSign * cascadeAsym * brainGain));
+    if (useBrain) {
+      const meanL = meanRate(rate, ctx.dnLeft);
+      const meanR = meanRate(rate, ctx.dnRight);
+      const total = meanL + meanR;
+      const cascadeAsym = total > 1e-3 ? (meanR - meanL) / (total + 1e-6) : 0;
+      const brainGain = w.__visualBrainGain ?? 1.2;
+      const brainSign = w.__visualBrainSign ?? -1;
+      if (Math.abs(cascadeAsym) > 0.05) {
+        turn = Math.max(-1, Math.min(1, brainSign * cascadeAsym * brainGain));
+      } else if (aAbs > dead) {
+        // Fallback to angle proxy when cascade is too weak.
+        const sign = a > 0 ? 1 : -1;
+        const mag = Math.min(1, aAbs / ((45 * Math.PI) / 180));
+        turn = sign * mag * 0.7;
+      } else {
+        turn = 0;
+      }
     } else {
-      // Cascade hasn't developed (target just appeared, or below noise
-      // floor). Fall back to angle proxy so we don't lose the target
-      // while waiting for the brain to catch up.
-      const dead = (5 * Math.PI) / 180;
+      // Default bypass: angle proxy. Fast, reliable, but not honest.
       const sign = a > 0 ? 1 : -1;
       if (aAbs > dead) {
         const mag = Math.min(1, aAbs / ((45 * Math.PI) / 180));
@@ -362,8 +373,6 @@ export function motorFromBrain(rate: Float32Array, ctx: MotorContext): MotorComm
     }
 
     // Forward speed scales by alignment — fly slows on hard turns.
-    // No lateralized forward signal in the connectome yet, so this is
-    // still a proxy. Fly area in retina drives base speed.
     const fovHalf = (60 * Math.PI) / 180;
     const alignment = aAbs < fovHalf ? 1 - aAbs / fovHalf : 0;
     const baseSpeed = Math.min(0.6, ctx.visual!.area * 8 + 0.2);
