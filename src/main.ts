@@ -1066,7 +1066,6 @@ async function main() {
   (window as unknown as { __rlActionStats: typeof policyActionStats }).__rlActionStats = policyActionStats;
   (room as any).drivePolicyTick = () => {
     if (trainedActiveTargetCmS <= 0 || !trainedWalker || !physics) return false;
-    physics.buildWalkingObservation(obsScratch, trainedActiveTargetCmS);
     // RAW obs, no normalization. The walking checkpoint shipped on
     // Figshare 25309105 has only the 15 policy-network variables —
     // no ObservationActionNorm running stats. Empirically, feeding
@@ -1075,19 +1074,31 @@ async function main() {
     // rollout-derived obs-norm.bin we computed ourselves blows up
     // outputs to |max|≈11000 (4 orders of magnitude OOD). The
     // trained policy was clearly evaluated against raw obs.
-    const actions = trainedWalker.act(obsScratch);
-    physics.applyTrainedWalkerActions(actions);
-    // Track action stats for e2e introspection — low |actions| means
-    // policy is producing weak commands (stand-still); saturated to ±1
-    // means OOD-explosion.
-    let m = 0, s = 0;
-    for (let i = 0; i < actions.length; i++) {
-      const a = Math.abs(actions[i]);
-      if (a > m) m = a;
-      s += a;
+    //
+    // Control loop matches native: each iteration is one full
+    // _WALK_CONTROL_TIMESTEP (2 ms = 20 substeps × dt=0.0001).
+    // Policy is called once per control tick (500 Hz simulated)
+    // and its output drives 20 physics substeps before the next
+    // call. Two iterations per render frame ≈ 4 ms simulated, in
+    // line with the previous step(32) ≈ 3.2 ms budget but with the
+    // policy update rate matching what it was trained against.
+    const N_CONTROL_TICKS = 2;
+    const SUBSTEPS_PER_TICK = 20;
+    let mMax = 0, sSum = 0, sCount = 0;
+    for (let t = 0; t < N_CONTROL_TICKS; t++) {
+      physics.buildWalkingObservation(obsScratch, trainedActiveTargetCmS);
+      const actions = trainedWalker.act(obsScratch);
+      physics.applyTrainedWalkerActions(actions);
+      physics.step(SUBSTEPS_PER_TICK);
+      for (let i = 0; i < actions.length; i++) {
+        const a = Math.abs(actions[i]);
+        if (a > mMax) mMax = a;
+        sSum += a;
+        sCount++;
+      }
     }
-    policyActionStats.absMax = Math.max(policyActionStats.absMax, m);
-    policyActionStats.absMean = (policyActionStats.absMean * policyTickCount + s / actions.length) / (policyTickCount + 1);
+    policyActionStats.absMax = Math.max(policyActionStats.absMax, mMax);
+    policyActionStats.absMean = (policyActionStats.absMean * policyTickCount + sSum / sCount) / (policyTickCount + 1);
     policyTickCount++;
     policyActionStats.count = policyTickCount;
     return true;

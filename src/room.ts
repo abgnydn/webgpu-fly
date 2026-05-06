@@ -617,8 +617,11 @@ export class Room {
       if (this.physics && this.bodies.length) {
         // External hook: if main.ts has the trained walker enabled,
         // it builds an observation + writes 59 actions BEFORE the
-        // CPG fires. drivePolicyTick returns true if it took control
-        // for this frame; in that case skip the CPG.
+        // CPG fires. drivePolicyTick now runs its own control loop
+        // (multiple policy calls + sub-stepping per render frame) to
+        // match native flybody's 500 Hz policy rate. When it returns
+        // true, the render-frame's sim budget has already been spent
+        // and we skip the trailing step(32).
         const policyTook = (this as any).drivePolicyTick?.() ?? false;
         if (!policyTook) {
           // Brain → VNC stand-in → body. Two motor primitives selected
@@ -629,12 +632,11 @@ export class Room {
           this.physics.driveLegs(walkAmp, this.turn);
           const buzz = Math.min(1, Math.abs(this.forward) * 0.5 + Math.abs(this.turn) * 0.3);
           this.physics.driveWings(buzz, this.turn);
+          // flybody MJCF runs at dt=0.0001 s; cap sim per render frame
+          // to keep frame budget sane. 32 substeps ≈ 3.2 ms simulated
+          // per render.
+          this.physics.step(32);
         }
-
-        // flybody MJCF runs at dt=0.0001 s; cap sim per render frame
-        // to keep frame budget sane. 32 substeps ≈ 3.2 ms simulated
-        // per render.
-        this.physics.step(32);
         this.syncBodyTransforms();
         this.refreshRetina();
         this.onRetinaUpdate?.();
