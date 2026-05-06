@@ -8,6 +8,7 @@ import { Physics } from "./physics";
 import { motorFromBrain, resetVnc, vncSnapshot, type MotorContext } from "./vnc";
 import { GaitEvolver } from "./evolution";
 import { loadWalkingPolicy, loadWalkingObsNorm, type WalkingPolicy, type ObsNormStats } from "./walking-policy";
+import { loadManifest, type VersionFor } from "./manifest";
 
 const SUPER_CLASS = [
   "unknown", "sensory", "ascending", "intrinsic", "central",
@@ -124,6 +125,14 @@ function bootSkip(name: "brain" | "vnc" | "body", detail: string) {
 }
 
 async function main() {
+  // Cache-bust manifest. Maps asset filename → "?v=<12-char sha>" so the
+  // browser cache key is unique per build. Combined with `Cache-Control:
+  // immutable` on R2, subsequent loads hit the browser cache and skip
+  // the network entirely for the heavy binaries (~170 MB total).
+  // Missing manifest (local dev pre-build) → no version stamps, plain
+  // unversioned URLs.
+  const versionFor: VersionFor = await loadManifest();
+
   // Allow the deploy to point at an external host for brain.bin /
   // brain.meta.json (Vercel Hobby's 50 MB-per-file limit blocks the
   // 120 MB connectome). Set VITE_BRAIN_URL at build time.
@@ -133,7 +142,7 @@ async function main() {
   bootStage("brain", "run", "fetching connectome (120 MB)…");
   let brain: Brain;
   try {
-    brain = await loadBrain(brainUrl);
+    brain = await loadBrain(brainUrl + versionFor("brain.bin"));
   } catch (e) {
     log(`failed: ${(e as Error).message}`, "err");
     log("did you run `npm run data && npm run convert`?", "warn");
@@ -163,7 +172,7 @@ async function main() {
   let famousDns: Record<string, number[]> = {};
   let famousDnLabels: Record<string, string> = {};
   try {
-    const meta = await (await fetch(metaUrl)).json();
+    const meta = await (await fetch(metaUrl + versionFor("brain.meta.json"))).json();
     famousDns = meta.famous_dns ?? {};
     famousDnLabels = meta.famous_dn_descriptions ?? {};
   } catch {}
@@ -482,8 +491,8 @@ async function main() {
   const vncMetaUrl = import.meta.env.VITE_VNC_META_URL || "/vnc.meta.json";
   bootStage("vnc", "run", "fetching MANC connectome (43 MB)…");
   try {
-    const vncBrain = await loadBrain(vncUrl);
-    const vncMetaResp = await fetch(vncMetaUrl);
+    const vncBrain = await loadBrain(vncUrl + versionFor("vnc.bin"));
+    const vncMetaResp = await fetch(vncMetaUrl + versionFor("vnc.meta.json"));
     vncMeta = await vncMetaResp.json();
     vncSim = await FlySim.create(vncBrain, { ...DEFAULT_PARAMS });
     log(`real VNC loaded: ${vncBrain.header.numNeurons.toLocaleString()} neurons, ${vncBrain.header.numEdges.toLocaleString()} edges (Janelia MANC)`, "ok");
@@ -994,15 +1003,19 @@ async function main() {
     }
     if (!trainedWalker) {
       log("loading trained walking policy …");
+      const policyUrl = (import.meta.env.VITE_WALKING_POLICY_URL ?? "/walking-policy.bin")
+        + versionFor("walking-policy.bin");
+      const obsNormUrl = (import.meta.env.VITE_WALKING_OBS_NORM_URL ?? "/walking-obs-norm.bin")
+        + versionFor("walking-obs-norm.bin");
       try {
-        trainedWalker = await loadWalkingPolicy();
+        trainedWalker = await loadWalkingPolicy(policyUrl);
         log(`trained walker loaded: ${trainedWalker.obsDim}-dim obs → ${trainedWalker.actDim}-dim action (Vaxenburg et al. 2025)`, "ok");
       } catch (e) {
         log(`policy load failed: ${(e as Error).message}`, "err");
         return;
       }
       try {
-        trainedObsNorm = await loadWalkingObsNorm();
+        trainedObsNorm = await loadWalkingObsNorm(obsNormUrl);
         log(`obs normalizer loaded (${trainedObsNorm.mean.length}-dim from flybody env rollout)`, "ok");
       } catch (e) {
         log(`obs normalizer not available, falling back to per-call LN: ${(e as Error).message}`, "warn");

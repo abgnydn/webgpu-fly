@@ -20,6 +20,10 @@ public/vnc.meta.json
 # MANC raw downloads (Janelia public bucket; tools/download_manc.sh)
 data/manc/
 
+# Asset version manifest — regenerable via tools/write_manifest.py.
+# Maps asset filename → 12-char sha used for cache-busting binary URLs.
+public/assets.json
+
 # Dallmann 2026 supplementary table 1 — manually downloaded from biorxiv.
 data/raw/dallmann_2026/
 

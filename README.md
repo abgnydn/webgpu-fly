@@ -57,6 +57,11 @@ bash tools/download_flybody_policies.sh
 # Pull TuragaLab flybody MJCF + 85 OBJ meshes (~149 MB)
 # (see public/flybody/meshes.txt for the canonical fetch pattern)
 
+# (Optional but recommended) refresh the cache-bust manifest. Maps
+# every asset filename → 12-char sha so the runtime can append
+# ?v=<sha> to URLs and let the browser cache them forever.
+python3 tools/write_manifest.py   # → public/assets.json
+
 # Run
 npm install
 npm run dev                       # http://localhost:8766
@@ -67,8 +72,16 @@ npm run test:e2e                  # 22 Playwright tests, ~15 min
 
 `DEPLOY.md` covers the full Cloudflare Pages + R2 path. Heavy assets
 (brain.bin, vnc.bin, flybody, walking-policy.bin) live in R2; Pages serves
-the ~9 MB JS+WASM bundle. Returning visitors get instant loads via the
-IndexedDB cache layer in `src/cache.ts`.
+the ~9 MB JS+WASM bundle.
+
+**Caching:** `tools/upload_to_r2.sh` regenerates `assets.json` and
+uploads it with `Cache-Control: no-cache`, then uploads every binary
+with `Cache-Control: public, max-age=31536000, immutable`. The
+runtime reads `assets.json` first and appends `?v=<sha>` to every
+binary URL — so the browser cache key is unique per build. New build
+→ new sha → fresh fetch (transparent invalidation). Same build →
+cache hit → no network for the 170 MB of binaries. Flybody OBJs use
+a separate IndexedDB layer (`src/cache.ts`) for the same reason.
 
 ## Architecture
 
@@ -96,7 +109,10 @@ tools/
                                 public/walking-obs-norm.bin (per-channel
                                 obs mean/std from a 600-step rollout)
   download_data.sh / download_manc.sh / download_flybody_policies.sh
-  upload_to_r2.sh      pushes assets to Cloudflare R2
+  write_manifest.py    sha-stamp every public/* asset → public/assets.json
+                       (cache-bust manifest, regenerable, gitignored)
+  upload_to_r2.sh      pushes assets to Cloudflare R2 with
+                       immutable Cache-Control + version manifest
 
 tests/smoke.spec.ts    22 Playwright e2e tests
 ```
