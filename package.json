@@ -10,7 +10,7 @@
     "data": "bash tools/download_data.sh",
     "convert": ".venv/bin/python tools/build_csr.py",
     "test:e2e": "playwright test",
-    "build:slim": "npm run build && rm -rf dist/flybody dist/brain.bin dist/brain.meta.json dist/vnc.bin dist/vnc.meta.json dist/walking-policy.bin dist/walking-policy-fixtures.json",
+    "build:slim": "npm run build && rm -rf dist/flybody dist/flybody.bundle.bin dist/brain.bin dist/brain.meta.json dist/vnc.bin dist/vnc.meta.json dist/walking-policy.bin dist/walking-obs-norm.bin dist/walking-ref.bin dist/walking-policy-fixtures.json",
     "deploy": "npm run build:slim && npx --yes wrangler pages deploy dist --project-name=webgpu-fly --branch=main",
     "deploy:vercel": "npm run build && vercel --prod",
     "deploy:r2": "bash tools/upload_to_r2.sh"
