@@ -1,0 +1,69 @@
+webgpu-fly
+Copyright 2026 Ahmet Barış Günaydın
+
+This product includes software developed by Ahmet Barış Günaydın
+(https://github.com/abgnydn/webgpu-fly), distributed under the MIT
+License (see LICENSE). The browser runtime, the WebGPU LIF kernels
+(src/shaders/*.wgsl), the data-build pipeline (tools/*.py), the
+pure-TypeScript policy forward pass, and the game/replay layer are
+original work, MIT-licensed.
+
+This software consumes and, in its public deployment, redistributes
+several upstream datasets and models. Their licenses are reproduced or
+referenced below and govern those portions; the MIT license above does
+NOT relicense them.
+
+------------------------------------------------------------------------
+1. TuragaLab/flybody — fruit-fly MuJoCo body model (MJCF + OBJ meshes)
+   https://github.com/TuragaLab/flybody
+   Distributed under the Apache License, Version 2.0. The complete
+   license text is included as LICENSE-FLYBODY.
+
+   The flybody MJCF and the ~85 OBJ meshes served from R2 are
+   redistributed unmodified. The actuator / joint / site / sensor
+   orderings that src/physics.ts builds its lookup tables from are
+   derived from a live `flybody.tasks.base.Walking` environment via
+   tools/dump_flybody_spec.py (see data/flybody-spec.json). Per Apache
+   2.0 §4(b), any modifications carry the Apache 2.0 license.
+
+   Reference: Vaxenburg et al. 2025. Whole-body simulation of realistic
+   fruit-fly locomotion with deep reinforcement learning. Nature.
+
+------------------------------------------------------------------------
+2. MuJoCo (compiled to WebAssembly via @mujoco/mujoco)
+   https://github.com/google-deepmind/mujoco
+   Distributed under the Apache License, Version 2.0 (same text as
+   LICENSE-FLYBODY). MuJoCo runs the body physics in-browser.
+
+------------------------------------------------------------------------
+3. FlyWire FAFB connectome — adult Drosophila whole-brain wiring
+   https://flywire.ai
+   Connectivity and annotation tables are licensed CC-BY 4.0.
+   tools/build_csr.py converts them to public/brain.bin (pre-signed CSR);
+   the resulting binary is a derivative of the CC-BY source.
+
+   Reference: Dorkenwald et al. 2024. Neuronal wiring diagram of an adult
+   brain. Nature 634:124-138. (and the FlyWire consortium papers therein)
+
+------------------------------------------------------------------------
+4. Janelia MANC connectome — male Drosophila ventral nerve cord
+   https://www.janelia.org/project-team/flyem/manc-connectome
+   Licensed CC-BY 4.0. tools/build_vnc.py converts it to public/vnc.bin.
+
+   Reference: Takemura et al. 2024. A connectome of the male Drosophila
+   ventral nerve cord. eLife. Marin et al. 2024 (female VNC), Nature
+   631:128-140.
+
+------------------------------------------------------------------------
+5. Trained walking policy (Vaxenburg et al. 2025 deposit)
+   https://janelia.figshare.com/articles/dataset/25309105
+   Licensed CC-BY 4.0. tools/extract_walking_policy.py reads the
+   published SavedModel checkpoint into public/walking-policy.bin; the
+   forward pass in src/walking-policy.ts is original MIT code.
+
+------------------------------------------------------------------------
+This NOTICE file is required by Apache License 2.0 §4(d) to preserve
+attribution for the flybody- and MuJoCo-derived portions. It must be
+included in any redistribution of this software, in whole or in part,
+in source or binary form. The CC-BY datasets above additionally
+require attribution to their respective sources under CC-BY 4.0.

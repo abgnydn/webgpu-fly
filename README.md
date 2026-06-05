@@ -1,89 +1,195 @@
-# webgpu-fly
+<div align="center">
 
-A real fly brain talking to a real fly spinal cord talking to a real fly body, live in your browser tab.
+# 🪰 webgpu-fly
 
-**Demo:** https://webgpu-fly.pages.dev — no install, just a URL. Tested in Chrome / Edge desktop with WebGPU enabled (default since 2023).
+**A real fruit-fly brain, spinal cord, and body — running live in a browser tab.**
 
-## What's actually inside
+<a href="https://webgpu-fly.pages.dev"><img alt="Launch" src="https://img.shields.io/badge/%E2%96%B6%20LAUNCH-webgpu--fly.pages.dev-9ad7ff?style=for-the-badge&labelColor=06070a"/></a>
+&nbsp;
+<a href="https://webgpu-fly.pages.dev/app?mode=science"><img alt="Science view" src="https://img.shields.io/badge/SCIENCE%20VIEW-%2Fapp%3Fmode%3Dscience-6cd28a?style=for-the-badge&labelColor=06070a"/></a>
+
+<br/><br/>
+
+<img alt="version" src="https://img.shields.io/badge/v0.1.0-0ea5e9?style=flat-square&labelColor=06070a"/>
+<img alt="license" src="https://img.shields.io/badge/code-MIT-22c55e?style=flat-square&labelColor=06070a"/>
+<img alt="data" src="https://img.shields.io/badge/data-CC--BY%20%2F%20Apache--2.0-c084fc?style=flat-square&labelColor=06070a"/>
+<img alt="webgpu" src="https://img.shields.io/badge/WebGPU-required-ff7849?style=flat-square&labelColor=06070a"/>
+<img alt="install-free" src="https://img.shields.io/badge/install-0%20bytes-eab308?style=flat-square&labelColor=06070a"/>
+
+</div>
+
+<br/>
+
+You control a fly by firing real **descending neurons** in the
+[FlyWire](https://flywire.ai) connectome. The spike cascade propagates through
+the real wiring; the fly walks because the connectome says so. There is no
+scripted animation — every step you see is an LIF cascade through a real fly's
+brain map, into a real fly's spinal cord, driving a physically simulated body.
+
+---
+
+<table border="0">
+<tr>
+<td valign="top" width="33%">
+
+**What this is**
+
+- A whole-animal *Drosophila* nervous system — brain, spinal cord, and body — running end-to-end in a browser tab on WebGPU, no install and no server.
+- Two real connectomes (FlyWire brain + Janelia MANC spine) simulated as leaky integrate-and-fire networks, one fused GPU dispatch per timestep.
+- A physically simulated fly body (TuragaLab flybody in MuJoCo/WASM) driven by the spine's motor neurons, with a retina feeding vision back into the brain.
+- A game with **replay-as-URL**: a shared link deterministically re-executes the identical neuron cascade against the same connectome.
+
+</td>
+<td valign="top" width="33%">
+
+**What this isn't**
+
+- **Not a scientific simulator replacement.** NEST / Brian2 / NEURON are faster, biophysically detailed, and validated. For real fly-brain dynamics research, use those.
+- **Not biophysically detailed.** Neurons are LIF with a two-state alpha synapse — no ion channels, dendritic compartments, or neuromodulation.
+- **Not quantitatively validated** whole-brain. The dynamics check is qualitative (Kenyon-cell sparsity matches Shiu et al. 2024), not a cell-type-resolved rate match.
+- **Not faster than the reference.** It runs *slower* than real time. The win is reachability, not throughput. See [`LIMITATIONS.md`](./LIMITATIONS.md).
+
+</td>
+<td valign="top" width="33%">
+
+**Who it's for**
+
+- **The curious public.** A real animal brain you can poke, with a 30-second time-to-first-spike and no setup.
+- **Educators.** Every key fires a named command neuron and you watch the consequence ripple to the legs — the connectome made tangible.
+- **Connectome / WebGPU folks.** A real ~140k-neuron LIF kernel benchmarked honestly in the browser, with the brain→spine→body path wired from real biology.
+- **Anyone who wants reproducibility.** Runs are URLs; a replay link is a verifiable brain trace, not a video.
+
+</td>
+</tr>
+</table>
+
+---
+
+## ▶ Play
+
+Each key fires both copies of a famous descending neuron (DN). Race the fly to
+the red target in the least **time × spikes**.
+
+```
+Q DNa01    forward         A DNp01    escape jump     Z RRN     forward step
+W DNa02    forward, faster S DNp09    looming-evoked  X BPN     forward
+E DNb01    backward        D DNp52    forward circuit
+R DNg13    turning         F MDN      backward
+                                                       SPACE     new round
+                                                       M         science view
+```
+
+Win → copy the replay URL. The recipient sees the **identical** simulation —
+deterministic seeded target + recorded keystrokes against the same connectome.
+Daily-challenge mode uses the same target seed for everyone on the same UTC day.
+
+The landing page at [`/`](https://webgpu-fly.pages.dev) explains the project in
+plain language; the simulator itself lives at
+[`/app`](https://webgpu-fly.pages.dev/app). Append `?mode=science` (or press
+`M` in game) for the researcher interface: stim presets, closed-loop visual
+mode, ARS evolver, raw spike-rate log.
+
+---
+
+## 🧠 What's actually inside
 
 | Layer | Source | What runs |
 |---|---|---|
-| Brain | [FlyWire FAFB](https://flywire.ai/) connectome (Dorkenwald et al. 2024, Nature) | 139,255 neurons, 15M synaptic edges, two-state alpha-synapse LIF on WebGPU |
-| Spine | [Janelia MANC](https://www.janelia.org/project-team/flyem/manc-connectome) connectome (Takemura et al. 2024) | 23,188 VNC neurons, 5.2M edges, second WebGPU LIF instance |
-| Body | [TuragaLab/flybody](https://github.com/TuragaLab/flybody) MJCF (Vaxenburg et al. 2025, Nature) | 67 bodies, 111 actuators, real physics in mujoco_wasm |
-| Eyes | offscreen render-to-texture from fly head pose | 64×16 retinal sample fed to brain optic neurons |
-| Walker | trained RL policy from the Vaxenburg et al. 2025 [Figshare deposit](https://janelia.figshare.com/articles/dataset/MuJoCo_fruit_fly_body_model_datasets_supporting_Whole-body_simulation_of_realistic_fruit_fly_locomotion_with_deep_reinforcement_learning_/25309105) | 4-hidden-layer LayerNormMLP, 741-dim observation → 59 actions, pure-TS forward pass |
+| **Brain** | [FlyWire FAFB](https://flywire.ai/) connectome (Dorkenwald et al. 2024, *Nature*) | 139,255 neurons, ~15M synaptic edges, two-state alpha-synapse LIF on WebGPU |
+| **Spine** | [Janelia MANC](https://www.janelia.org/project-team/flyem/manc-connectome) connectome (Takemura et al. 2024) | 23,188 VNC neurons, 5.2M edges, second WebGPU LIF instance |
+| **Body** | [TuragaLab/flybody](https://github.com/TuragaLab/flybody) MJCF (Vaxenburg et al. 2025, *Nature*) | 67 bodies, 111 actuators, real physics in MuJoCo/WASM |
+| **Eyes** | offscreen render-to-texture from fly head pose | 64×16 retinal sample fed to brain optic neurons |
+| **Walker** | trained RL policy ([Vaxenburg et al. 2025 Figshare](https://janelia.figshare.com/articles/dataset/25309105)) | LayerNormMLP, 741-dim obs → 59 actions, pure-TS forward pass, verified element-wise vs the published checkpoint |
 
-The brain's descending neurons feed the VNC by cell-type name match (DNa01 in brain ↔ DNa01 in VNC are the same neuron, brain side has the soma, VNC side has the axon). The VNC's motor neurons drive the leg actuators. Wire-by-wire from real biology, no learned shortcuts in the brain→spine path.
+Brain → spine wiring is by **cell-type name match** (`DNa01` in the brain is the
+same neuron as `DNa01` in the VNC — brain side has the soma, VNC side the axon).
+VNC motor neurons drive the leg actuators. Wire-by-wire from real biology, no
+learned shortcuts in the brain→spine path. (Caveat: it's a name join across two
+*different* animals' connectomes, not a reconstructed synaptic bridge — see
+[`LIMITATIONS.md`](./LIMITATIONS.md) §5.)
 
-## What you can click
+---
 
-- **5 stim presets** (Visual flash / Olfactory hit / Mixed sensory / Spontaneous / DN buttons) — fires real neurons in the connectome, watch the cascade in the heatmap
-- **5 famous DNs** (DNa01, DNa02, DNb01 moonwalker, DNp01 escape jump, DNg13 turning) with links to [FlyWire Codex](https://codex.flywire.ai)
-- **Track target** — closed-loop visual servo: fly's eyes see a red sphere, brain decides where to walk
-- **Evolve gait** — 128-policy CMA-ES on WebGPU, ~0.5 sec, winner drives the live body
-- **Use RL policy** — the trained Vaxenburg 2025 walker; click and the body walks via 59 RL actions instead of the hand-coded CPG
+## ⏱️ How fast — honestly
 
-Right-click anywhere in the room to drop the red target.
+The brain LIF kernel is **memory-bandwidth-bound**, not compute-bound, and runs
+at **~0.25 kHz** of biological time on an M2 Pro (16 GB). That is **4× slower
+than real time**. We measured against the scientific standards on the **same
+machine**:
 
-## How it compares
+| Engine | Biological-time rate | Notes |
+|---|---|---|
+| NEST 3.10 (C++ reference) | **0.67 kHz** | `tools/nest_bench.py` |
+| Hand-written Rust (multicore) | **0.45 kHz** | `tools/cpu-bench/` |
+| **webgpu-fly (WebGPU)** | **0.25 kHz** | `npm run bench:brain` |
 
-This is roughly the same idea as:
-- [EON Systems](https://eon.systems) (March 2026) — also FlyWire LIF + flybody MuJoCo, but server-side and closed
-- [FlyGM](https://arxiv.org/abs/2602.17997) (NeurIPS 2025) — connectome-as-GNN trained controller, Python
-- [NeuroMechFly v2 / flygym](https://github.com/NeLy-EPFL/flygym) (Nature Methods 2024) — Python pip package, dm_control-based
+The 1 kHz target from the project's original design note turned out to be
+**unreachable for all three** on M2 Pro. We report what we measured, not what we
+hoped. The point of webgpu-fly was never "faster than NEST" — it's **a real fly
+brain on a phone in 30 seconds**, the deployment angle the others can't touch.
 
-The differentiators here:
-- **Public, browser-tab demo**. The others need Python, a GPU, and time. This needs a URL.
-- **All three layers** (brain + spine + body) wired together, not just brain+body.
-- **22-test Playwright e2e suite** asserts KC sparsity in literature range, DN cascade behavior, retina detection, RL walker forward translation, etc. Catches regressions automatically.
+---
 
-## Quickstart (local dev)
+## 🆚 How it compares
+
+Roughly the same idea as:
+
+- [EON Systems](https://eon.systems) (March 2026) — also FlyWire LIF + flybody MuJoCo, but server-side and closed.
+- [FlyGM](https://arxiv.org/abs/2602.17997) (NeurIPS 2025) — connectome-as-GNN controller, Python.
+- [NeuroMechFly v2 / flygym](https://github.com/NeLy-EPFL/flygym) (Nature Methods 2024) — Python pip package.
+
+Differentiators: **(1)** a browser-tab game with a URL — the others need Python,
+a GPU, and a setup hour; **(2)** all three layers (brain + spine + body) wired
+together, not just brain+body; **(3)** replay-as-URL — every shared run is a
+deterministic re-execution anyone can verify, study, or remix.
+
+---
+
+## ⏱️ Quickstart (local dev)
 
 ```bash
-# Pull raw FlyWire data (~855 MB, Zenodo)
+# Brain (~855 MB FlyWire pull from Zenodo)
 bash tools/download_data.sh
-python3 tools/build_csr.py        # → public/brain.bin (120 MB)
+python3 tools/build_csr.py                    # → public/brain.bin (120 MB)
 
-# Pull MANC spine data (~88 MB, Janelia GCS)
+# Spine (~88 MB MANC pull from Janelia GCS)
 bash tools/download_manc.sh
-.venv-tf/bin/python tools/build_vnc.py    # → public/vnc.bin (43 MB)
+.venv-tf/bin/python tools/build_vnc.py        # → public/vnc.bin (43 MB)
 
-# Pull trained walking policy (~6.5 MB, Janelia Figshare)
+# Trained walking policy (~6.5 MB Janelia Figshare)
 bash tools/download_flybody_policies.sh
 .venv-tf/bin/python tools/extract_walking_policy.py
-                                  # → public/walking-policy.bin (4.8 MB)
 
-# Pull TuragaLab flybody MJCF + 85 OBJ meshes (~149 MB)
-# (see public/flybody/meshes.txt for the canonical fetch pattern)
+# TuragaLab flybody MJCF + 85 OBJ meshes (~149 MB) — see public/flybody/meshes.txt
 
-# (Optional but recommended) refresh the cache-bust manifest. Maps
-# every asset filename → 12-char sha so the runtime can append
-# ?v=<sha> to URLs and let the browser cache them forever.
-python3 tools/write_manifest.py   # → public/assets.json
-
-# Run
 npm install
-npm run dev                       # http://localhost:8766
-npm run test:e2e                  # 22 Playwright tests, ~15 min
+npm run dev          # http://localhost:8766
+npm run typecheck    # tsc --noEmit          ← what CI enforces
+npm run build        # tsc && vite build     ← what CI enforces
+npm run test:e2e     # Playwright (game + science modes) — needs WebGPU + assets
 ```
 
-## Deploy
+CI (`.github/workflows/ci.yml`) runs `typecheck` + `build` on Ubuntu. The
+Playwright e2e suite is **not** in CI — it needs a WebGPU-capable Chromium and
+~1 GB of assets, neither of which the default runners provide. It runs locally
+and covers both game and science modes (KC sparsity, DN cascade, retina
+detection, RL walker translation, replay roundtrip, daily-challenge).
 
-`DEPLOY.md` covers the full Cloudflare Pages + R2 path. Heavy assets
-(brain.bin, vnc.bin, flybody, walking-policy.bin) live in R2; Pages serves
-the ~9 MB JS+WASM bundle.
+---
 
-**Caching:** `tools/upload_to_r2.sh` regenerates `assets.json` and
-uploads it with `Cache-Control: no-cache`, then uploads every binary
-with `Cache-Control: public, max-age=31536000, immutable`. The
-runtime reads `assets.json` first and appends `?v=<sha>` to every
-binary URL — so the browser cache key is unique per build. New build
-→ new sha → fresh fetch (transparent invalidation). Same build →
-cache hit → no network for the 170 MB of binaries. Flybody OBJs use
-a separate IndexedDB layer (`src/cache.ts`) for the same reason.
+## 🚀 Deploy
 
-## Architecture
+[`DEPLOY.md`](./DEPLOY.md) covers the full Cloudflare Pages + R2 path. The root
+`/` is a lightweight landing page; the app is at `/app`. Heavy assets
+(`brain.bin`, `vnc.bin`, flybody, `walking-policy.bin`) live in R2 because
+Cloudflare Pages caps individual files at 25 MB; Pages serves the ~9 MB JS+WASM
+bundle. `npm run deploy` builds slim and pushes to Pages; `npm run deploy:r2`
+uploads the binaries. Caching is transparent-invalidation via a sha manifest
+(`tools/write_manifest.py` → `?v=<sha>`); see DEPLOY.md.
+
+---
+
+## 🧱 Architecture
 
 ```
 src/
@@ -91,66 +197,66 @@ src/
   sim.ts               WebGPU LIF runtime, alpha-synapse kernel
   shaders/lif.wgsl     fused per-step LIF compute kernel
   shaders/evolve.wgsl  parallel CPG evolution kernel
-  vnc.ts               synthetic 200-neuron spine (fallback when MANC silent)
+  vnc.ts               spine wiring + synthetic fallback
   walking-policy.ts    pure-TS forward pass for Vaxenburg 2025 RL policy
   physics.ts           mujoco_wasm wrapper, leg CPG, RL action mapping
   room.ts              three.js scene, retinal render, camera
   evolution.ts         WebGPU ARS gait evolver
+  game.ts              game mode + deterministic replay URLs
   main.ts              UI, brain-stim orchestration, button wiring
 
 tools/
-  build_csr.py         FlyWire feather → brain.bin
-  build_vnc.py         MANC CSV → vnc.bin (with DN-input + motor-leg metadata)
+  build_csr.py         FlyWire feather → brain.bin (authoritative binary spec)
+  build_vnc.py         MANC CSV → vnc.bin (DN-input + motor-leg metadata)
   extract_walking_policy.py    SavedModel checkpoint → walking-policy.bin
-  verify_walking_policy.py     numpy ground-truth verifier (e2e fixtures)
-  dump_flybody_spec.py         live flybody.tasks.base.Walking env →
-                                data/flybody-spec.json (canonical actuator,
-                                joint, site, sensor orderings) +
-                                public/walking-obs-norm.bin (per-channel
-                                obs mean/std from a 600-step rollout)
-  download_data.sh / download_manc.sh / download_flybody_policies.sh
-  write_manifest.py    sha-stamp every public/* asset → public/assets.json
-                       (cache-bust manifest, regenerable, gitignored)
-  upload_to_r2.sh      pushes assets to Cloudflare R2 with
-                       immutable Cache-Control + version manifest
-
-tests/smoke.spec.ts    22 Playwright e2e tests
+  dump_flybody_spec.py live flybody Walking env → canonical orderings
+  nest_bench.py / cpu-bench/   NEST + Rust baselines for the perf table
+  upload_to_r2.sh      Cloudflare R2 push with immutable Cache-Control
 ```
 
-## Honest gaps
+The authoritative `brain.bin` binary-format spec lives in the
+`tools/build_csr.py` docstring.
 
-These are real and documented in commit messages — not selling-points to hide:
+---
 
-1. The trained RL walker still walks slower than nominal because the
-   trained env's `ObservationActionNorm` running mean/std checkpoint
-   was never published with the policy. We substitute either per-call
-   LayerNorm or a 286-channel obs-norm derived from a `flybody` env
-   rollout (`tools/dump_flybody_spec.py`). Either keeps actions
-   non-saturating; the rollout-derived path produces near-zero lateral
-   drift, the LayerNorm path produces faster forward speed.
-2. ~~85-dim `joints_pos` and 59-dim action mapping were
-   MJCF-declaration guesses~~ — now verified against a live flybody
-   Walking env (`tools/dump_flybody_spec.py`). Three concrete bugs
-   were caught and fixed: action vector is **adhesion-first**,
-   actuators need per-channel `[lo, hi]` linear remap (not just
-   `tanh`), and the 85 joints are non-contiguous in qpos.
-3. CPG-mode (when "Use RL policy" is OFF) has a soft kinematic-assist
-   on the freejoint translation scaled by motor command. The
-   RL-policy mode has no such assist — actions go straight to actuators.
-4. Closed-loop visual reflex hardcodes `turn = angle * k` when target
-   is visible because the brain's optic→DN cascade takes longer than
-   our 50 ms tick window to develop the contralateral wiring.
+## 🔬 For researchers
 
-## Citations
+- **How to cite** — see [`CITATION.cff`](./CITATION.cff). The repo is set up to
+  mint a Zenodo DOI on the first GitHub release (`.zenodo.json` pre-populates
+  the deposit); the DOI badge is wired in here once minted.
+- **[Limitations](./LIMITATIONS.md)** — the honest single-page list of what
+  this *cannot* do, what is *untested*, and what is *approximate*: the perf
+  ceiling, the LIF simplifications, the brain→spine→body approximations, and
+  the browser matrix. Read this before drawing any scientific conclusion.
+- **[Contributing](./CONTRIBUTING.md)** — most-valuable work is quantitative
+  dynamics validation and cross-vendor benchmarks. Honest negatives are
+  first-class.
+- **[Attribution](./NOTICE)** — every upstream dataset/model and its license.
 
-- Dorkenwald et al. 2024. *Neuronal wiring diagram of an adult brain.* Nature 634:124-138.
-- Takemura et al. 2024. *A connectome of the male Drosophila ventral nerve cord.* eLife reviewed preprint.
-- Shiu et al. 2024. *Drosophila brain model recapitulates whole-brain LIF dynamics.* Nature 632:210-217.
-- Vaxenburg et al. 2025. *Whole-body physics simulation of fruit fly locomotion.* Nature.
-- Marin et al. 2024. *Connectomic reconstruction of a female Drosophila ventral nerve cord.* Nature 631:128-140.
+---
 
-## License
+## 📚 Citations
 
-MIT for our code. Upstream connectome / body / policy assets carry their
-own licenses (CC-BY for FlyWire and MANC; flybody is Apache-2.0; trained
-policies are CC-BY).
+- Dorkenwald et al. 2024. *Neuronal wiring diagram of an adult brain.* Nature 634:124–138.
+- Takemura et al. 2024. *A connectome of the male Drosophila ventral nerve cord.* eLife.
+- Shiu et al. 2024. *A leaky integrate-and-fire model of the Drosophila brain.* Nature 632:210–217.
+- Vaxenburg et al. 2025. *Whole-body simulation of realistic fruit-fly locomotion with deep reinforcement learning.* Nature.
+- Marin et al. 2024. *Connectomic reconstruction of a female Drosophila ventral nerve cord.* Nature 631:128–140.
+
+---
+
+## 📜 License
+
+Original code is **MIT** ([`LICENSE`](./LICENSE)). Upstream assets carry their
+own licenses, consolidated in [`NOTICE`](./NOTICE): the TuragaLab flybody model
+and MuJoCo are **Apache-2.0** ([`LICENSE-FLYBODY`](./LICENSE-FLYBODY)); the
+FlyWire and Janelia MANC connectome data and the trained walking policy are
+**CC-BY 4.0**.
+
+<div align="center">
+<br/>
+<sub>MIT · Built with WebGPU, TypeScript, three.js, MuJoCo/WASM, Playwright<br/>
+Author <a href="https://github.com/abgnydn">@abgnydn</a> · <a href="mailto:hi@barisgunaydin.com">hi@barisgunaydin.com</a></sub>
+<br/><br/>
+<a href="https://webgpu-fly.pages.dev"><img alt="Open in browser" src="https://img.shields.io/badge/%E2%96%B6%20OPEN%20IN%20BROWSER-webgpu--fly.pages.dev-9ad7ff?style=for-the-badge&labelColor=06070a"/></a>
+</div>

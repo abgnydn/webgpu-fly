@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Allow manual runs from the Actions tab.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: typecheck · build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+        # vite copies whatever is in public/; the large connectome binaries
+        # are gitignored and fetched at runtime, so the build needs no data.
+
+      # The Playwright e2e suite (npm run test:e2e) is intentionally NOT run
+      # here. It needs a WebGPU-capable Chromium with GPU virtualization plus
+      # ~1 GB of connectome / body assets, neither of which the default Ubuntu
+      # runners provide. It runs locally on an M2 Pro — see README "Quickstart".

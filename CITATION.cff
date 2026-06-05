@@ -1,0 +1,49 @@
+cff-version: 1.2.0
+message: "If you use webgpu-fly in academic work, please cite as below."
+type: software
+title: "webgpu-fly: A real Drosophila brain, spinal cord, and body running in a browser tab via WebGPU"
+authors:
+  - family-names: Günaydın
+    given-names: Ahmet Barış
+    email: hi@barisgunaydin.com
+    affiliation: Independent researcher
+repository-code: "https://github.com/abgnydn/webgpu-fly"
+url: "https://webgpu-fly.pages.dev"
+license: MIT
+version: 0.1.0
+date-released: 2026-06-05
+keywords:
+  - WebGPU
+  - connectome
+  - Drosophila
+  - FlyWire
+  - leaky integrate-and-fire
+  - spiking neural network
+  - MuJoCo
+  - reinforcement learning
+  - embodiment
+  - ventral nerve cord
+  - in-browser computation
+  - reproducible research
+abstract: >-
+  webgpu-fly runs a whole-animal Drosophila nervous system entirely in a
+  web browser. The FlyWire FAFB brain connectome (139,255 neurons, ~15M
+  synaptic connections) and the Janelia MANC ventral-nerve-cord
+  connectome (23,188 neurons, 5.2M connections) are each simulated as
+  leaky integrate-and-fire networks in fused WebGPU compute kernels, with
+  presynaptic-neurotransmitter signs baked into the weights so the inner
+  loop never branches on excitatory/inhibitory type. Brain command
+  neurons drive the spine by cell-type name match; the spine's motor
+  neurons drive a physically simulated 67-body, 111-actuator TuragaLab
+  flybody model running in MuJoCo compiled to WebAssembly. A 64x16 retina
+  rendered from the fly's head pose feeds back into the brain's optic
+  neurons. An optional trained reinforcement-learning walking policy
+  (Vaxenburg et al. 2025) runs as a pure-TypeScript forward pass verified
+  element-wise against the published checkpoint. The project is a game
+  with shareable, deterministic replay URLs: a shared link re-executes
+  the identical neuron cascade against the same connectome. The brain LIF
+  kernel is memory-bandwidth-bound and runs at ~0.25 kHz biological time
+  on an Apple M2 Pro, benchmarked honestly against NEST 3.10 (0.67 kHz)
+  and a hand-written multicore Rust port (0.45 kHz) on the same machine;
+  the contribution is reachability (a real connectome simulation behind a
+  single URL), not raw throughput.

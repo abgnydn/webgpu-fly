@@ -1,0 +1,31 @@
+{
+  "title": "webgpu-fly: A real Drosophila brain, spinal cord, and body running in a browser tab via WebGPU",
+  "upload_type": "software",
+  "access_right": "open",
+  "license": "MIT",
+  "version": "0.1.0",
+  "language": "eng",
+  "creators": [
+    {
+      "name": "Günaydın, Ahmet Barış",
+      "affiliation": "Independent researcher"
+    }
+  ],
+  "description": "<p><strong>webgpu-fly</strong> runs a whole-animal <em>Drosophila</em> nervous system inside a web browser with no installation and no server. The FlyWire FAFB whole-brain connectome (139,255 neurons, ~15 million synaptic connections) and the Janelia MANC ventral-nerve-cord connectome (23,188 neurons, 5.2 million connections) are each simulated as leaky integrate-and-fire (LIF) networks in fused WebGPU compute kernels &mdash; one dispatch per timestep, with presynaptic-neurotransmitter signs pre-baked into the connection weights so the inner loop never branches on excitatory/inhibitory type.</p><p>The brain's descending command neurons drive the spinal cord by cell-type name match (the same named cell on both sides of the brain&ndash;VNC boundary), and the spine's motor neurons actuate a physically simulated 67-body, 111-actuator <strong>TuragaLab flybody</strong> model running in MuJoCo compiled to WebAssembly. A 64&times;16 retina rendered each frame from the fly's own head pose is fed back into the brain's optic neurons, closing a sensorimotor loop. An optional trained reinforcement-learning walking policy (Vaxenburg et al. 2025) runs as a pure-TypeScript forward pass verified element-wise against the published SavedModel checkpoint.</p><p>The deployment is a game: the player fires real descending neurons with keypresses to steer the fly to a target, and a winning run produces a deterministic, shareable replay URL that re-executes the identical neuron cascade against the same connectome &mdash; a brain trace, not a video. Performance is reported honestly: the brain LIF kernel is memory-bandwidth-bound and runs at ~0.25 kHz of biological time on an Apple M2 Pro, benchmarked on the same machine against NEST 3.10 (0.67 kHz) and a hand-written multicore Rust port (0.45 kHz). The original 1 kHz target was unreachable for any of the three on that hardware; the contribution is reachability &mdash; a real connectome simulation behind a single URL &mdash; not raw throughput. Known limitations (RL-walker speed gap, closed-loop visual-reflex approximation, kinematic-assist options) are enumerated in LIMITATIONS.md.",
+  "keywords": [
+    "WebGPU",
+    "WebAssembly",
+    "connectome",
+    "Drosophila",
+    "FlyWire",
+    "leaky integrate-and-fire",
+    "spiking neural network",
+    "MuJoCo",
+    "reinforcement learning",
+    "embodiment",
+    "ventral nerve cord",
+    "in-browser computation",
+    "reproducible research"
+  ],
+  "notes": "Original code is MIT (see LICENSE). The TuragaLab flybody model and MuJoCo are Apache-2.0 (see LICENSE-FLYBODY and NOTICE); the FlyWire and Janelia MANC connectome data and the trained walking policy are CC-BY 4.0 and attributed in NOTICE. Generative AI was used as a coding aid; all output was author-reviewed and checked against the test suite and the upstream references."
+}
