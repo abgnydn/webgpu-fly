@@ -10,6 +10,7 @@
 
 <br/><br/>
 
+<a href="https://github.com/abgnydn/webgpu-fly/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/abgnydn/webgpu-fly/actions/workflows/ci.yml/badge.svg?branch=main"/></a>
 <img alt="version" src="https://img.shields.io/badge/v0.1.0-0ea5e9?style=flat-square&labelColor=06070a"/>
 <img alt="license" src="https://img.shields.io/badge/code-MIT-22c55e?style=flat-square&labelColor=06070a"/>
 <img alt="data" src="https://img.shields.io/badge/data-CC--BY%20%2F%20Apache--2.0-c084fc?style=flat-square&labelColor=06070a"/>
