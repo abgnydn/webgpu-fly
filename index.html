@@ -14,6 +14,34 @@
       content="A real fruit-fly brain, spine, and body running live in a browser tab. Press a key, fire real neurons, watch the fly walk. No install."
     />
     <meta name="twitter:card" content="summary_large_image" />
+    <meta name="author" content="Ahmet Barış Günaydın" />
+    <link rel="canonical" href="https://webgpu-fly.pages.dev/" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "webgpu-fly",
+        "applicationCategory": "Science / Simulation",
+        "operatingSystem": "Any (WebGPU browser)",
+        "url": "https://webgpu-fly.pages.dev",
+        "codeRepository": "https://github.com/abgnydn/webgpu-fly",
+        "license": "https://opensource.org/licenses/MIT",
+        "description": "A real Drosophila brain, spinal cord, and body running live in a browser tab via WebGPU.",
+        "author": {
+          "@type": "Person",
+          "name": "Ahmet Barış Günaydın",
+          "email": "hi@barisgunaydin.com",
+          "url": "https://barisgunaydin.com",
+          "sameAs": [
+            "https://barisgunaydin.com",
+            "https://kernelfusion.dev",
+            "https://github.com/abgnydn",
+            "https://www.linkedin.com/in/abgnydn/"
+          ]
+        },
+        "isPartOf": { "@type": "CreativeWork", "name": "kernelfusion.dev research line", "url": "https://kernelfusion.dev" }
+      }
+    </script>
 
     <!--
       Auto-forward deep links into the simulator so nothing breaks:
@@ -191,6 +219,35 @@
       .duo li { color: var(--dim); font-size: 13.5px; margin-bottom: 9px; }
       .duo li:last-child { margin-bottom: 0; }
       .duo li b { color: var(--ink); }
+
+      /* companion-projects card grid */
+      .demos { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+      @media (max-width: 760px) { .demos { grid-template-columns: repeat(2, 1fr); } }
+      @media (max-width: 480px) { .demos { grid-template-columns: 1fr; } }
+      .demo-card {
+        display: flex; flex-direction: column;
+        background: var(--panel); border: 1px solid var(--line);
+        border-radius: 9px; overflow: hidden;
+        text-decoration: none; color: inherit;
+        transition: border-color 0.12s, transform 0.12s;
+      }
+      .demo-card:hover { border-color: #34404f; transform: translateY(-2px); text-decoration: none; }
+      .demo-card .preview {
+        height: 74px; display: flex; align-items: center; justify-content: center;
+        font: 700 26px/1 "SF Mono", ui-monospace, Menlo, monospace;
+        letter-spacing: 0.04em; color: rgba(255,255,255,0.92);
+      }
+      .demo-card .card-body { padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
+      .demo-card h4 { margin: 0; font-size: 15px; font-weight: 600; color: var(--ink); }
+      .demo-card h4 .arrow { color: var(--dimmer); font-weight: 400; }
+      .demo-card:hover h4 { color: var(--accent); }
+      .demo-card p { margin: 0; font-size: 12.5px; color: var(--dim); line-height: 1.55; flex: 1; }
+      .demo-card .meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+      .demo-card .meta span {
+        font-size: 10px; color: var(--dimmer); background: #0a1118;
+        border: 1px solid var(--line2); border-radius: 999px; padding: 3px 8px;
+        font-family: "SF Mono", ui-monospace, Menlo, monospace;
+      }
 
       /* footer */
       footer { padding: 40px 0 60px; border-top: 1px solid var(--line); color: var(--dimmer); font-size: 13px; }
@@ -397,14 +454,93 @@
         </div>
       </section>
 
+      <!-- ───────── companion projects ───────── -->
+      <section id="line">
+        <h2>Part of a research line</h2>
+        <h3>One front of a broader effort: Geant4-class scientific simulators, ported to WebGPU, running in a browser tab.</h3>
+        <p style="margin-bottom:24px">
+          webgpu-fly is built by
+          <a href="https://barisgunaydin.com" target="_blank" rel="noopener">Ahmet Barış Günaydın</a>,
+          an independent researcher. It shares its thesis — and its kernel-fusion
+          and viewer machinery — with these sibling projects:
+        </p>
+        <div class="demos">
+          <a class="demo-card" href="https://webgpu-q.vercel.app" target="_blank" rel="noopener">
+            <div class="preview" style="background: linear-gradient(135deg,#0a1f24,#0e2e3a); color:#7fe3ff;">Q</div>
+            <div class="card-body">
+              <h4>webgpu-q <span class="arrow">↗</span></h4>
+              <p>The closest sibling. Browser-native quantum chemistry — Hartree–Fock, CCSD(T), DFT, EOM-CCSD — ported from PySCF and GPU-accelerated. Same "real science in a tab" thesis, different physics.</p>
+              <div class="meta"><span>CCSD(T)</span><span>WebGPU</span></div>
+            </div>
+          </a>
+          <a class="demo-card" href="https://webgpudna.com" target="_blank" rel="noopener">
+            <div class="preview" style="background: linear-gradient(135deg,#0c1a26,#14283a); color:#9ad7ff;">🧬</div>
+            <div class="card-body">
+              <h4>webgpu-dna <span class="arrow">↗</span></h4>
+              <p>Sister project: Geant4-DNA radiobiology — Monte-Carlo electron tracks, radiolysis chemistry, DNA-damage scoring — in the browser, within 0.985× of the reference. The 4D-viewer pattern came from here.</p>
+              <div class="meta"><span>Geant4-DNA</span><span>Monte Carlo</span></div>
+            </div>
+          </a>
+          <a class="demo-card" href="https://kernelfusion.dev" target="_blank" rel="noopener">
+            <div class="preview" style="background: linear-gradient(135deg,#0a1f1a,#103028); color:#5fe6bd;">⊗</div>
+            <div class="card-body">
+              <h4>kernelfusion.dev <span class="arrow">↗</span></h4>
+              <p>The research umbrella. Single-kernel fusion for GPU workloads — collapsing per-dispatch overhead — which is exactly what makes a 140k-neuron LIF step feasible per frame here.</p>
+              <div class="meta"><span>Umbrella</span><span>Two preprints</span></div>
+            </div>
+          </a>
+          <a class="demo-card" href="https://gpubench.dev" target="_blank" rel="noopener">
+            <div class="preview" style="background: linear-gradient(135deg,#1a0e1f,#2a1432); color:#ffb56e;">▤</div>
+            <div class="card-body">
+              <h4>gpubench.dev <span class="arrow">↗</span></h4>
+              <p>"How fast is your GPU in the browser?" Real WebGPU compute tests across 592 devices and 7 vendors — the honest hardware baseline behind any number on this page.</p>
+              <div class="meta"><span>592 devices</span><span>7 vendors</span></div>
+            </div>
+          </a>
+          <a class="demo-card" href="https://neuropulse.live" target="_blank" rel="noopener">
+            <div class="preview" style="background: linear-gradient(135deg,#190a26,#2a1140); color:#c084fc;">◗</div>
+            <div class="card-body">
+              <h4>neuropulse.live <span class="arrow">↗</span></h4>
+              <p>Watch a real 3.8B-parameter transformer think, tensor by tensor — every glow is a live activation read back from WebGPU. The same read-back-and-render idea as this fly's retina.</p>
+              <div class="meta"><span>Live activations</span><span>No server</span></div>
+            </div>
+          </a>
+          <a class="demo-card" href="https://barisgunaydin.com" target="_blank" rel="noopener">
+            <div class="preview" style="background: linear-gradient(135deg,#11141d,#1b2030); color:#e6e9f0; font-style:italic;">A·B·G</div>
+            <div class="card-body">
+              <h4>barisgunaydin.com <span class="arrow">↗</span></h4>
+              <p>The author's site — an index of every project, paper, and note behind this research line, plus contact. Ahmet Barış Günaydın, independent researcher.</p>
+              <div class="meta"><span>About</span><span>Papers</span><span>Contact</span></div>
+            </div>
+          </a>
+        </div>
+      </section>
+
       <div class="bottom-cta">
         <a class="btn primary" href="app.html">▶ Launch the simulator</a>
       </div>
 
       <footer>
+        <div style="margin-bottom:14px">
+          <strong style="color:var(--ink)">webgpu-fly</strong>
+          — MIT ·
+          by <a href="https://barisgunaydin.com" target="_blank" rel="noopener">Ahmet Barış Günaydın</a> ·
+          <a href="mailto:hi@barisgunaydin.com">hi@barisgunaydin.com</a> ·
+          <a href="https://github.com/abgnydn/webgpu-fly" target="_blank" rel="noopener">GitHub ↗</a>
+          <br />
+          <span style="font-size:11.5px; color:var(--dimmer)">
+            Part of the
+            <a href="https://kernelfusion.dev" target="_blank" rel="noopener">kernelfusion.dev</a>
+            research line · related:
+            <a href="https://webgpu-q.vercel.app" target="_blank" rel="noopener">webgpu-q</a> ·
+            <a href="https://webgpudna.com" target="_blank" rel="noopener">webgpudna.com</a> ·
+            <a href="https://gpubench.dev" target="_blank" rel="noopener">gpubench.dev</a>
+          </span>
+        </div>
         <div>
           Built on open science. Code is MIT; the connectome, body, and policy
-          datasets carry their own open licenses (CC-BY / Apache-2.0).
+          datasets carry their own open licenses (CC-BY / Apache-2.0) — see
+          <a href="https://github.com/abgnydn/webgpu-fly/blob/main/NOTICE" target="_blank" rel="noopener">NOTICE</a>.
         </div>
         <div class="refs">
           <div>Dorkenwald et&nbsp;al. 2024 — <i>Neuronal wiring diagram of an adult brain.</i> Nature 634:124–138.</div>
