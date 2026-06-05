@@ -1,8 +1,8 @@
 <div align="center">
 
-# 🪰 webgpu-fly
+<a href="https://webgpu-fly.pages.dev"><img src="./public/readme-hero.svg" alt="webgpu-fly — a real Drosophila brain, spinal cord, and body running in a browser tab" width="100%"/></a>
 
-**A real fruit-fly brain, spinal cord, and body — running live in a browser tab.**
+<br/><br/>
 
 <a href="https://webgpu-fly.pages.dev"><img alt="Launch" src="https://img.shields.io/badge/%E2%96%B6%20LAUNCH-webgpu--fly.pages.dev-9ad7ff?style=for-the-badge&labelColor=06070a"/></a>
 &nbsp;
