@@ -310,6 +310,14 @@ export class Room {
     return { pixels: this.retinaPixels, w: RETINA_W, h: RETINA_H };
   }
 
+  /** Move the visual target to a new (x, y) in MuJoCo cm. Game mode
+   * uses this to place a procedurally-seeded target each round. */
+  setTargetPos(x: number, y: number) {
+    this.targetPos = [x, y, this.targetPos[2]];
+    if (this.target) this.target.position.set(x, this.targetPos[2], -y);
+    if (this.targetGlow && this.target) this.targetGlow.position.copy(this.target.position);
+  }
+
   /** Distance to target in MuJoCo cm (xy plane). */
   targetDistance(): number {
     const phys = this.physics;

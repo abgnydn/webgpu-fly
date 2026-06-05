@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>webgpu-fly · brain LIF benchmark</title>
+    <style>
+      :root { color-scheme: dark; }
+      html, body { margin: 0; background: #06070a; color: #e6e6e6;
+        font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Mono", monospace; }
+      main { padding: 24px; max-width: 720px; }
+      h1 { font-size: 14px; margin: 0 0 12px; letter-spacing: 0.04em;
+        text-transform: uppercase; color: #9ad7ff; }
+      pre { white-space: pre-wrap; }
+      .ok { color: #6cd28a; } .warn { color: #f5c542; } .err { color: #ff6b6b; }
+      .num { color: #9ad7ff; font-variant-numeric: tabular-nums; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>brain LIF kernel benchmark</h1>
+      <pre id="out">booting…</pre>
+    </main>
+    <script type="module" src="/src/bench.ts"></script>
+  </body>
+</html>

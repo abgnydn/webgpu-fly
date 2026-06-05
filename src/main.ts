@@ -10,6 +10,17 @@ import { GaitEvolver } from "./evolution";
 import { loadWalkingPolicy, loadWalkingObsNorm, type WalkingPolicy, type ObsNormStats } from "./walking-policy";
 import { loadWalkingRef } from "./walking-ref";
 import { loadManifest, type VersionFor } from "./manifest";
+import { Game, type DnEntry } from "./game";
+
+// ?mode=game (default) shows the playable HUD; ?mode=science keeps the
+// classic stim-button + log layout. The URL hash carrying `r=<base64>`
+// triggers replay mode regardless and forces game.
+const URL_PARAMS = new URLSearchParams(window.location.search);
+const HAS_REPLAY_HASH = /^#?r=/.test(window.location.hash);
+const APP_MODE: "game" | "science" =
+  HAS_REPLAY_HASH ? "game"
+  : (URL_PARAMS.get("mode") === "science" ? "science" : "game");
+if (APP_MODE === "game") document.body.classList.add("game");
 
 const SUPER_CLASS = [
   "unknown", "sensory", "ascending", "intrinsic", "central",
@@ -224,6 +235,12 @@ async function main() {
   // body graph. Don't block the brain init on it.
   let physics: Physics | null = null;
   bootStage("body", "run", "fetching flybody MJCF + 85 meshes…");
+  let physicsResolve!: (p: Physics) => void;
+  let physicsReject!: (e: Error) => void;
+  const physicsReady = new Promise<Physics>((res, rej) => {
+    physicsResolve = res;
+    physicsReject = rej;
+  });
   Physics.create((msg) => {
     log(`flybody: ${msg}`);
     bootStage("body", "run", msg);
@@ -236,10 +253,12 @@ async function main() {
       log(`flybody attached (${p.bodyCount} bodies)`, "ok");
       bootStage("body", "ok", `${p.bodyCount} bodies, 85 meshes ready`);
       bootMaybeDismiss();
+      physicsResolve(p);
     })
     .catch((e) => {
       log(`flybody failed to load: ${(e as Error).message}`, "warn");
       bootStage("body", "run", `failed: ${(e as Error).message}`);
+      physicsReject(e);
     });
 
   // Pre-bin DN indices by hemisphere using pos_x relative to brain centroid.
@@ -1185,8 +1204,43 @@ async function main() {
   }
   viewer.onPick((idx) => { void runSingleNeuronStim(idx); });
 
-  // Auto-run the first preset (visual flash) so there's something on screen.
-  runStimulus(STIMULI[0], buttons[0]);
+  if (APP_MODE === "game") {
+    // Wait for physics to be ready, then start the game. Game mode owns
+    // the brain → drive loop directly; we skip the auto-preset so the
+    // first visible thing is the title card, not a stim cascade.
+    physicsReady.then(() => {
+      const dnEntries: DnEntry[] = [];
+      // Stable ordering: prefer Famous-DN order from brain.meta.json,
+      // map to QWERTY rows so the keys feel keyboard-natural.
+      const KEY_LAYOUT = ["q", "w", "e", "r", "a", "s", "d", "f", "z", "x"];
+      const names = Object.keys(famousDns);
+      for (let i = 0; i < names.length && i < KEY_LAYOUT.length; i++) {
+        const name = names[i];
+        dnEntries.push({
+          name,
+          description: famousDnLabels[name] ?? "",
+          neurons: famousDns[name],
+          key: KEY_LAYOUT[i],
+        });
+      }
+      const game = new Game({
+        dns: dnEntries,
+        numNeurons: header.numNeurons,
+        sim,
+        room,
+        viewer,
+        applyDrive: applyDriveFromSnapshot,
+        resetSim: () => { sim.reset(); resetVnc(); viewer.clearSnapshots(); },
+        log,
+      });
+      game.start();
+      (window as unknown as { __game: Game }).__game = game;
+      log("game mode: ready (press SPACE to start, M for science view)", "ok");
+    }).catch(() => {/* boot stage already logged */});
+  } else {
+    // Science mode: auto-run the first preset so there's something on screen.
+    runStimulus(STIMULI[0], buttons[0]);
+  }
 }
 
 main().catch((e) => log(`uncaught: ${(e as Error).stack ?? e}`, "err"));

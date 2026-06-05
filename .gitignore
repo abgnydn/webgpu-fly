@@ -51,6 +51,10 @@ data/raw/flybody-mocap/
 
 # Native flybody diagnostic JSON dumps from tools/diag_native_walker.py.
 data/native-walker-*.json
+data/native-obs.json
+
+# Rust CPU-baseline build artifacts (regenerable via `cargo build --release`)
+tools/cpu-bench/target/
 
 # flybody assets — vendored from TuragaLab/flybody main (149 MB)
 public/flybody/*.obj

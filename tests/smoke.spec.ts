@@ -62,7 +62,7 @@ function extractNumber(log: string, re: RegExp): number | null {
 
 test.describe("webgpu-fly e2e", () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/?mode=science");
     await waitForLog(page, READY_MSG, 90_000);
   });
 
@@ -364,7 +364,7 @@ test.describe("webgpu-fly e2e", () => {
    // drifts (variable mapping, layer order, activation function),
    // this test pinpoints it.
   test("trained walking policy matches numpy ground truth", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/?mode=science");
     const fixtures = await page.evaluate(async () => {
       const fres = await fetch("/walking-policy-fixtures.json");
       const cases: Array<{ name: string; obs: number[]; action: number[] }> = await fres.json();
@@ -395,7 +395,7 @@ test.describe("webgpu-fly e2e", () => {
    // strict contract — drift here means the policy receives garbage at
    // runtime. Lock it down.
   test("walking policy obs layout sums to 741", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/?mode=science");
     const result = await page.evaluate(async () => {
       const modPath = "/src/walking-policy.ts";
       const mod = await import(/* @vite-ignore */ modPath);
@@ -422,7 +422,7 @@ test.describe("webgpu-fly e2e", () => {
   });
 
   test("trained walking policy loads + forward-passes", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/?mode=science");
     const result = await page.evaluate(async () => {
       const modPath = "/src/walking-policy.ts";
       const mod = await import(/* @vite-ignore */ modPath);
