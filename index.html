@@ -3,176 +3,416 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>webgpu-fly</title>
+    <title>webgpu-fly — a real fly brain you can play, in your browser</title>
+    <meta
+      name="description"
+      content="Control a fruit fly by firing real neurons in its connectome. The whole brain, spinal cord, and body run live in your browser tab — no install. Nothing is scripted; the fly walks because the wiring says so."
+    />
+    <meta property="og:title" content="webgpu-fly — a real fly brain you can play" />
+    <meta
+      property="og:description"
+      content="A real fruit-fly brain, spine, and body running live in a browser tab. Press a key, fire real neurons, watch the fly walk. No install."
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <!--
+      Auto-forward deep links into the simulator so nothing breaks:
+        #r=…            shared replay URLs (replay state lives in the hash)
+        ?mode=science   the researcher view
+        ?play / ?app    explicit "skip the landing" links
+      Everything else gets the landing page. We run this before paint so
+      a shared replay link never flashes the marketing copy.
+    -->
+    <script>
+      (function () {
+        var h = window.location.hash || "";
+        var q = window.location.search || "";
+        var go =
+          /^#?r=/.test(h) ||
+          /[?&]mode=science\b/.test(q) ||
+          /[?&](play|app)\b/.test(q);
+        if (go) {
+          window.location.replace("app.html" + q + h);
+        }
+      })();
+    </script>
+
     <style>
-      :root { color-scheme: dark; }
+      :root {
+        color-scheme: dark;
+        --bg: #06070a;
+        --panel: #0b0f15;
+        --line: #1a1c20;
+        --line2: #232a34;
+        --ink: #e6e6e6;
+        --dim: #8b94a0;
+        --dimmer: #6c7480;
+        --accent: #9ad7ff;
+        --good: #6cd28a;
+        --warn: #f5c542;
+      }
       * { box-sizing: border-box; }
-      html, body { margin: 0; height: 100%; background: #06070a; color: #e6e6e6; font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", monospace; }
-      #app { display: grid; grid-template-columns: 380px 1fr; height: 100vh; }
-      #side { padding: 18px; overflow-y: auto; border-right: 1px solid #1a1c20; display: flex; flex-direction: column; gap: 14px; }
-      #side h1 { font-size: 14px; margin: 0; letter-spacing: 0.04em; text-transform: uppercase; color: #9ad7ff; }
-      #side h2 { font-size: 11px; margin: 0; letter-spacing: 0.06em; text-transform: uppercase; color: #6c7480; }
+      html, body { margin: 0; }
+      body {
+        background:
+          radial-gradient(1100px 620px at 50% -8%, #0e1626 0%, transparent 60%),
+          var(--bg);
+        color: var(--ink);
+        font: 16px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      a { color: var(--accent); text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      .wrap { max-width: 880px; margin: 0 auto; padding: 0 24px; }
 
-      #stim-row { display: flex; flex-wrap: wrap; gap: 6px; }
-      .stim-btn {
-        flex: 1 0 calc(50% - 3px);
-        padding: 8px 10px;
-        background: #11161d;
-        color: #c2c5ca;
-        border: 1px solid #232a34;
-        border-radius: 4px;
-        cursor: pointer;
-        font: inherit;
-        text-align: left;
-        transition: background 0.1s, border-color 0.1s;
+      /* ── nav ── */
+      nav {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 18px 0; font-size: 13px;
       }
-      .stim-btn:hover { background: #1a2735; border-color: #2a3a4d; }
-      .stim-btn.active { background: #1a3a55; border-color: #4a90c8; color: #9ad7ff; }
-      .stim-btn:disabled { opacity: 0.5; cursor: wait; }
-      .stim-btn .label { display: block; font-weight: 600; color: #e6e6e6; margin-bottom: 2px; }
-      .stim-btn .hint { display: block; font-size: 10px; color: #6c7480; }
-      .stim-btn .ext-link {
-        position: absolute; top: 6px; right: 8px;
-        font-size: 11px; color: #6c7480; text-decoration: none;
-        padding: 2px 4px; border-radius: 2px;
+      nav .brand {
+        font-weight: 600; letter-spacing: 0.02em; color: var(--accent);
+        font-family: "SF Mono", ui-monospace, Menlo, monospace;
       }
-      .stim-btn .ext-link:hover { color: #9ad7ff; background: rgba(154,215,255,0.1); }
+      nav .links { display: flex; gap: 20px; color: var(--dim); }
+      nav .links a { color: var(--dim); }
+      nav .links a:hover { color: var(--accent); }
 
-      #out { white-space: pre-wrap; font-size: 12px; color: #c2c5ca; flex: 1; min-height: 0; overflow-y: auto; }
-      #out .ok { color: #6cd28a; }
-      #out .warn { color: #f5c542; }
-      #out .err { color: #ff6b6b; }
+      /* ── hero ── */
+      header.hero { padding: 56px 0 40px; text-align: center; }
+      .tag {
+        display: inline-block; font-size: 12px; letter-spacing: 0.08em;
+        text-transform: uppercase; color: var(--accent);
+        border: 1px solid var(--line2); border-radius: 999px;
+        padding: 5px 14px; margin-bottom: 26px; background: rgba(154,215,255,0.05);
+      }
+      h1 {
+        font-size: clamp(34px, 6vw, 56px); line-height: 1.06; margin: 0 0 20px;
+        font-weight: 600; letter-spacing: -0.02em;
+      }
+      h1 .hl { color: var(--accent); }
+      .lede {
+        font-size: clamp(17px, 2.5vw, 20px); color: var(--dim);
+        max-width: 620px; margin: 0 auto 34px;
+      }
+      .cta { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+      .btn {
+        display: inline-flex; align-items: center; gap: 8px;
+        font: 600 15px/1 -apple-system, system-ui, sans-serif;
+        padding: 15px 26px; border-radius: 8px; cursor: pointer;
+        border: 1px solid var(--line2); transition: 0.12s;
+      }
+      .btn.primary {
+        background: #1a3a55; color: var(--accent); border-color: #4a90c8;
+      }
+      .btn.primary:hover { background: #21496b; text-decoration: none; transform: translateY(-1px); }
+      .btn.ghost { background: var(--panel); color: var(--ink); }
+      .btn.ghost:hover { background: #131a23; text-decoration: none; border-color: #34404f; }
+      .note { margin-top: 16px; font-size: 12.5px; color: var(--dimmer); }
 
-      #stage { position: relative; display: grid; grid-template-columns: 1fr 1fr; }
-      #brain-pane, #room-pane { position: relative; overflow: hidden; }
-      #brain-pane { border-right: 1px solid #1a1c20; }
-      #pane-tag { position: absolute; top: 8px; left: 12px; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #6c7480; pointer-events: none; }
-      #drive-readout {
-        position: absolute; top: 8px; left: 12px;
-        font-size: 10px; color: #9ad7ff; font-variant-numeric: tabular-nums;
-        background: rgba(6,7,10,0.7); padding: 5px 10px; border-radius: 3px;
-        pointer-events: none; line-height: 1.5;
+      /* ── numbers strip ── */
+      .stats {
+        display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px;
+        background: var(--line); border: 1px solid var(--line);
+        border-radius: 10px; overflow: hidden; margin: 8px 0 4px;
       }
-      #canvas-container, #room-container { position: absolute; inset: 0; }
-      #controls {
-        position: absolute; left: 0; right: 0; bottom: 0;
-        padding: 12px 18px;
-        background: linear-gradient(180deg, transparent, rgba(6,7,10,0.85));
-        display: flex; align-items: center; gap: 12px;
+      .stat { background: var(--panel); padding: 18px 14px; text-align: center; }
+      .stat .n {
+        font-size: 22px; font-weight: 600; color: var(--accent);
+        font-variant-numeric: tabular-nums; font-family: "SF Mono", ui-monospace, Menlo, monospace;
       }
-      #controls input[type="range"] { flex: 1; }
-      #controls button {
-        background: #1a2735; color: #9ad7ff; border: 1px solid #2a3a4d;
-        padding: 6px 14px; border-radius: 4px; cursor: pointer; font: inherit;
-      }
-      #controls button:hover { background: #25364a; }
-      #controls button.recording { background: #4a1820; color: #ff8b8b; border-color: #803038; animation: pulse 1.4s ease-in-out infinite; }
-      @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.55 } }
-      #frame-label { min-width: 140px; font-variant-numeric: tabular-nums; color: #9ad7ff; font-size: 12px; }
-      /* Retina overlay: 64×16 image upscaled 4× to 256×64, with a label.
-         Shows what the fly's forward-looking retina samples each frame. */
-      #retina-overlay {
-        position: absolute;
-        top: 38px;
-        right: 12px;
-        width: 256px;
-        height: 64px;
-        image-rendering: pixelated;
-        background: #000;
-        border: 1px solid #2a3a4d;
-        border-radius: 3px;
-        pointer-events: none;
-      }
-      #retina-label {
-        position: absolute;
-        top: 100px;
-        right: 12px;
-        font-size: 9px;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: #6c7480;
-        pointer-events: none;
-      }
+      .stat .l { font-size: 11px; color: var(--dimmer); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 4px; }
+      @media (max-width: 620px) { .stats { grid-template-columns: repeat(2, 1fr); } }
 
-      /* Boot overlay — covers the whole app while the brain blob and
-         flybody assets stream in (~30-60 s on a cold cache). Fades out
-         once both pipelines are ready. */
-      #boot {
-        position: fixed; inset: 0; z-index: 1000;
-        background: radial-gradient(circle at 50% 35%, #0d1320, #06070a 70%);
-        color: #c2c5ca; font: 13px/1.5 -apple-system, "SF Pro Text", monospace;
-        display: flex; flex-direction: column; align-items: center; justify-content: center;
-        gap: 20px; transition: opacity 0.6s ease;
+      /* ── sections ── */
+      section { padding: 48px 0; border-top: 1px solid var(--line); }
+      section h2 {
+        font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em;
+        color: var(--dimmer); margin: 0 0 18px; font-weight: 600;
       }
-      #boot.hidden { opacity: 0; pointer-events: none; }
-      #boot h1 {
-        margin: 0; font-size: 28px; letter-spacing: 0.04em; color: #9ad7ff;
-        font-weight: 500;
+      section h3 { font-size: 22px; margin: 0 0 14px; font-weight: 600; letter-spacing: -0.01em; }
+      section p { color: var(--dim); margin: 0 0 16px; }
+      section p:last-child { margin-bottom: 0; }
+      .accentword { color: var(--accent); }
+
+      /* explain blocks */
+      .layers { display: grid; gap: 12px; }
+      .layer {
+        display: grid; grid-template-columns: 110px 1fr; gap: 16px;
+        background: var(--panel); border: 1px solid var(--line);
+        border-radius: 8px; padding: 16px 18px;
       }
-      #boot .sub { color: #6c7480; font-size: 12px; max-width: 420px; text-align: center; }
-      #boot .stages { display: grid; grid-template-columns: 18px 140px 1fr; gap: 8px 12px; align-items: center; min-width: 460px; }
-      #boot .stages .dot { width: 12px; height: 12px; border-radius: 50%; background: #2a3340; transition: background 0.3s; }
-      #boot .stages .dot.run { background: #f5c542; animation: pulse 1.4s ease-in-out infinite; }
-      #boot .stages .dot.ok  { background: #6cd28a; }
-      #boot .stages .label { color: #9ad7ff; font-variant-numeric: tabular-nums; }
-      #boot .stages .detail { color: #6c7480; font-variant-numeric: tabular-nums; }
-      #boot .blink { animation: pulse 1.6s ease-in-out infinite; color: #6c7480; font-size: 11px; }
-      @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.4 } }
+      .layer .lt {
+        font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 13px;
+        font-weight: 600; color: var(--accent); padding-top: 1px;
+      }
+      .layer .ld { font-size: 14px; color: var(--dim); }
+      .layer .ld b { color: var(--ink); font-weight: 600; }
+      @media (max-width: 560px) { .layer { grid-template-columns: 1fr; gap: 6px; } }
+
+      /* how-to keys */
+      .keys { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+      .kbd {
+        font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 12px;
+        background: #0a1118; color: var(--accent); border: 1px solid var(--line2);
+        border-radius: 4px; padding: 6px 9px;
+      }
+      .kbd b { color: var(--ink); }
+
+      /* honesty callout */
+      .callout {
+        background: var(--panel); border: 1px solid var(--line2);
+        border-left: 3px solid var(--warn); border-radius: 8px;
+        padding: 18px 20px;
+      }
+      .callout p { color: var(--dim); margin: 0 0 10px; }
+      .callout p:last-child { margin: 0; }
+
+      ul.clean { margin: 0; padding-left: 20px; color: var(--dim); }
+      ul.clean li { margin-bottom: 10px; }
+      ul.clean li b { color: var(--ink); }
+
+      /* is / isn't honesty band */
+      .duo { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      @media (max-width: 560px) { .duo { grid-template-columns: 1fr; } }
+      .duo .col {
+        background: var(--panel); border: 1px solid var(--line);
+        border-radius: 8px; padding: 18px 20px;
+      }
+      .duo .col.is { border-top: 3px solid var(--good); }
+      .duo .col.isnt { border-top: 3px solid var(--warn); }
+      .duo .col h4 {
+        margin: 0 0 12px; font-size: 12px; text-transform: uppercase;
+        letter-spacing: 0.07em; color: var(--dimmer); font-weight: 600;
+      }
+      .duo .col.is h4 { color: var(--good); }
+      .duo .col.isnt h4 { color: var(--warn); }
+      .duo ul { margin: 0; padding-left: 18px; }
+      .duo li { color: var(--dim); font-size: 13.5px; margin-bottom: 9px; }
+      .duo li:last-child { margin-bottom: 0; }
+      .duo li b { color: var(--ink); }
+
+      /* footer */
+      footer { padding: 40px 0 60px; border-top: 1px solid var(--line); color: var(--dimmer); font-size: 13px; }
+      footer .refs { margin: 14px 0 0; }
+      footer .refs div { margin-bottom: 6px; }
+      .bottom-cta { text-align: center; padding: 8px 0 4px; }
     </style>
   </head>
   <body>
-    <div id="boot">
-      <h1>webgpu-fly</h1>
-      <div class="sub">
-        a real fly brain (FlyWire, 139k neurons) talking to a real fly spinal cord
-        (Janelia MANC, 23k neurons) talking to a real fly body
-        (TuragaLab flybody, 67 parts) — all running in your browser tab.
-      </div>
-      <div class="stages">
-        <div id="boot-brain-dot" class="dot"></div>
-        <div class="label">connectome</div>
-        <div id="boot-brain-detail" class="detail">waiting…</div>
+    <div class="wrap">
+      <nav>
+        <span class="brand">webgpu-fly</span>
+        <span class="links">
+          <a href="#inside">What's inside</a>
+          <a href="#play">How to play</a>
+          <a href="https://github.com/abgnydn/webgpu-fly" target="_blank" rel="noopener">GitHub</a>
+          <a href="app.html?mode=science">Science view</a>
+        </span>
+      </nav>
 
-        <div id="boot-vnc-dot" class="dot"></div>
-        <div class="label">spine (VNC)</div>
-        <div id="boot-vnc-detail" class="detail">waiting…</div>
-
-        <div id="boot-body-dot" class="dot"></div>
-        <div class="label">body (flybody)</div>
-        <div id="boot-body-detail" class="detail">waiting…</div>
-      </div>
-      <div class="blink">first load downloads ~300 MB; subsequent loads are instant via IndexedDB cache</div>
-    </div>
-    <div id="app">
-      <aside id="side">
-        <h1>webgpu-fly</h1>
-        <div>
-          <h2 style="margin-bottom: 6px">Stimulus</h2>
-          <div id="stim-row"></div>
-          <div style="font-size: 10px; color: #6c7480; margin-top: 6px">click any neuron to pulse it • drag still rotates</div>
+      <header class="hero">
+        <span class="tag">a real fly brain · in your browser · no install</span>
+        <h1>You drive a fruit fly<br />by firing its <span class="hl">real neurons</span>.</h1>
+        <p class="lede">
+          Scientists mapped every neuron in a fruit fly's brain. This puts that
+          whole map — plus its spinal cord and its body — live in your browser
+          tab. Press a key, a real neuron fires, the signal spreads through the
+          real wiring, and the fly walks. Nothing here is animated by hand.
+        </p>
+        <div class="cta">
+          <a class="btn primary" href="app.html">▶ Launch the simulator</a>
+          <a class="btn ghost" href="#inside">How does it work?</a>
         </div>
-        <pre id="out"></pre>
-      </aside>
-      <main id="stage">
-        <div id="brain-pane">
-          <span id="pane-tag">connectome</span>
-          <div id="canvas-container"></div>
-          <div id="controls" hidden>
-            <button id="play">▶</button>
-            <input id="scrub" type="range" min="0" max="0" value="0" />
-            <span id="frame-label">snap 0 / 0</span>
-            <button id="rec" title="record canvas to webm">● rec</button>
+        <div class="note">
+          Needs a WebGPU browser (Chrome, Edge, or recent Safari). First visit
+          streams ~300 MB of brain &amp; body data, then it's cached — later
+          visits start instantly.
+        </div>
+      </header>
+
+      <div class="stats">
+        <div class="stat"><div class="n">139,255</div><div class="l">brain neurons</div></div>
+        <div class="stat"><div class="n">23,188</div><div class="l">spinal-cord neurons</div></div>
+        <div class="stat"><div class="n">20M+</div><div class="l">wired connections</div></div>
+        <div class="stat"><div class="n">67</div><div class="l">body parts, real physics</div></div>
+      </div>
+
+      <!-- ───────── plain-language explainer ───────── -->
+      <section id="what">
+        <h2>The 30-second version</h2>
+        <h3>A whole animal nervous system, end to end, running on your GPU.</h3>
+        <p>
+          A real fly's brain was reconstructed neuron-by-neuron from electron
+          microscopy — the <a href="https://flywire.ai" target="_blank" rel="noopener">FlyWire</a>
+          project. We loaded that exact wiring diagram into the browser and
+          turn it into a living simulation: each neuron charges up, fires when
+          it hits threshold, and passes the spike on to whatever it's connected
+          to. That's it — the same rule, 139,255 times, every millisecond.
+        </p>
+        <p>
+          The brain talks to the fly's <span class="accentword">spinal cord</span>
+          (a second real connectome), which drives the legs of a
+          <span class="accentword">physically simulated body</span>. So when you
+          press a key, you're not triggering an animation — you're injecting
+          current into specific command neurons and watching the consequences
+          ripple all the way down to the feet. If the wiring says "this makes
+          the fly walk forward," it walks forward. If it doesn't, it doesn't.
+        </p>
+      </section>
+
+      <!-- ───────── layers ───────── -->
+      <section id="inside">
+        <h2>What's actually inside</h2>
+        <h3>Four real datasets, wired together.</h3>
+        <div class="layers">
+          <div class="layer">
+            <div class="lt">Brain</div>
+            <div class="ld">
+              <b>FlyWire connectome</b> — the full reconstructed brain of an
+              adult fly: 139,255 neurons and ~15 million connections, from
+              Dorkenwald et&nbsp;al. 2024 (<i>Nature</i>). Runs as a
+              leaky integrate-and-fire network on WebGPU.
+            </div>
+          </div>
+          <div class="layer">
+            <div class="lt">Spine</div>
+            <div class="ld">
+              <b>Janelia MANC connectome</b> — the fly's ventral nerve cord
+              (its "spinal cord"): 23,188 neurons, 5.2&nbsp;million connections.
+              A second live network that turns brain commands into leg movement.
+            </div>
+          </div>
+          <div class="layer">
+            <div class="lt">Body</div>
+            <div class="ld">
+              <b>TuragaLab flybody</b> — a physically accurate fruit-fly model
+              with 67 body parts and 111 muscles, simulated with real physics
+              (MuJoCo) compiled to run in the browser.
+            </div>
+          </div>
+          <div class="layer">
+            <div class="lt">Eyes</div>
+            <div class="ld">
+              A tiny <b>64×16 retina</b> rendered from the fly's own head
+              position each frame, fed back into the brain's optic neurons — so
+              the fly can actually see the target it's walking toward.
+            </div>
           </div>
         </div>
-        <div id="room-pane">
-          <span id="pane-tag">embodiment</span>
-          <div id="drive-readout">fwd 0.00  turn 0.00</div>
-          <div id="room-container"></div>
-          <canvas id="retina-overlay" width="64" height="16" title="what the fly sees"></canvas>
-          <div id="retina-label">retina</div>
+        <p style="margin-top:18px">
+          The brain and spine are joined the way real biology does it: a command
+          neuron named <code>DNa01</code> in the brain is literally the same cell
+          as <code>DNa01</code> in the spinal cord. No learned shortcuts — wire
+          for wire from the real animal.
+        </p>
+      </section>
+
+      <!-- ───────── how to play ───────── -->
+      <section id="play">
+        <h2>How to play</h2>
+        <h3>Race the fly to the target, using as few spikes as you can.</h3>
+        <p>
+          Each key fires a famous <b>descending neuron</b> — a command cell that
+          carries instructions from brain to body. Tap them to steer:
+        </p>
+        <div class="keys">
+          <span class="kbd"><b>Q&nbsp;W</b> forward</span>
+          <span class="kbd"><b>E</b> backward</span>
+          <span class="kbd"><b>R</b> turn</span>
+          <span class="kbd"><b>A</b> escape jump</span>
+          <span class="kbd"><b>S</b> looming dodge</span>
+          <span class="kbd"><b>F</b> backward (MDN)</span>
+          <span class="kbd"><b>SPACE</b> new round</span>
+          <span class="kbd"><b>M</b> science view</span>
         </div>
-      </main>
+        <p style="margin-top:18px">
+          Reach the red target in the least time × fewest spikes. When you win,
+          you get a <span class="accentword">replay link</span> — whoever opens it
+          watches the <b>exact same simulation</b> re-run: the same target, your
+          same keystrokes, against the same brain. You're sharing a brain trace,
+          not a video.
+        </p>
+      </section>
+
+      <!-- ───────── is / isn't honesty band ───────── -->
+      <section id="straight">
+        <h2>Straight about it</h2>
+        <h3>What this is — and what it deliberately isn't.</h3>
+        <div class="duo">
+          <div class="col is">
+            <h4>✓ What it is</h4>
+            <ul>
+              <li>A <b>whole-animal nervous system</b> — brain, spine, and body — running end to end in a browser tab, no install.</li>
+              <li>Built from <b>real, published data</b>: two connectomes, a physical body model, and a trained policy, each from peer-reviewed sources.</li>
+              <li><b>Reproducible by design</b> — every shared run re-executes the same neurons deterministically.</li>
+            </ul>
+          </div>
+          <div class="col isnt">
+            <h4>✗ What it isn't</h4>
+            <ul>
+              <li><b>Not a replacement for scientific simulators</b> (NEST, Brian2, NEURON) — those are faster, more detailed, and validated.</li>
+              <li><b>Not biophysically detailed</b>: neurons are simple integrate-and-fire units — no ion channels or neuromodulation.</li>
+              <li><b>Not quantitatively validated</b> whole-brain, and it runs slower than real time. The full list lives in <a href="https://github.com/abgnydn/webgpu-fly/blob/main/LIMITATIONS.md" target="_blank" rel="noopener">LIMITATIONS.md</a>.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- ───────── why it's different ───────── -->
+      <section id="why">
+        <h2>Why this one's different</h2>
+        <h3>Other groups simulate fly brains too. None of them open in a tab.</h3>
+        <ul class="clean">
+          <li><b>It's just a link.</b> Comparable projects need Python, a GPU, and a setup hour. This needs one click.</li>
+          <li><b>All three layers, wired together</b> — brain <i>and</i> spine <i>and</i> body — not just brain plus body.</li>
+          <li><b>Every shared run is reproducible.</b> A replay URL re-executes the real neurons deterministically, so anyone can verify, study, or remix it.</li>
+        </ul>
+      </section>
+
+      <!-- ───────── honest perf ───────── -->
+      <section id="honest">
+        <h2>The honest part</h2>
+        <div class="callout">
+          <p>
+            This isn't the fastest fly-brain simulator — it's the most
+            <i>reachable</i> one. The brain kernel is limited by memory speed,
+            not math, and runs at about <b>0.25 kHz</b> of biological time on an
+            M2 Pro laptop.
+          </p>
+          <p>
+            We benchmarked honestly against the scientific standards on the same
+            machine: NEST (the C++ reference) hit 0.67 kHz, a hand-written Rust
+            port 0.45 kHz, and this WebGPU version 0.25 kHz. The original 1 kHz
+            target turned out to be unreachable for <i>any</i> of them on that
+            hardware — so we report what we measured, not what we hoped.
+          </p>
+          <p>
+            The point was never "faster than NEST." It's
+            <b>a real fly brain on a phone in 30 seconds</b> — the part the
+            others can't do. The full, honest list of what's simplified,
+            untested, or approximate is in
+            <a href="https://github.com/abgnydn/webgpu-fly/blob/main/LIMITATIONS.md" target="_blank" rel="noopener">LIMITATIONS.md</a>.
+          </p>
+        </div>
+      </section>
+
+      <div class="bottom-cta">
+        <a class="btn primary" href="app.html">▶ Launch the simulator</a>
+      </div>
+
+      <footer>
+        <div>
+          Built on open science. Code is MIT; the connectome, body, and policy
+          datasets carry their own open licenses (CC-BY / Apache-2.0).
+        </div>
+        <div class="refs">
+          <div>Dorkenwald et&nbsp;al. 2024 — <i>Neuronal wiring diagram of an adult brain.</i> Nature 634:124–138.</div>
+          <div>Takemura et&nbsp;al. 2024 — <i>A connectome of the male Drosophila ventral nerve cord.</i> eLife.</div>
+          <div>Vaxenburg et&nbsp;al. 2025 — <i>Whole-body simulation of realistic fruit-fly locomotion.</i> Nature.</div>
+          <div>Shiu et&nbsp;al. 2024 — <i>A leaky integrate-and-fire model of the Drosophila brain.</i> Nature 632:210–217.</div>
+        </div>
+      </footer>
     </div>
-    <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
