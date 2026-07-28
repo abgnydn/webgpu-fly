@@ -34,10 +34,11 @@ publishing fly-brain dynamics.
 - Neurons are **leaky integrate-and-fire** with a two-state alpha synapse.
   No Hodgkin-Huxley channels, no dendritic compartments, no spatial synapse
   positions, no neuromodulation dynamics.
-- We use the **aggregated** proofread connection table (~5M unique (pre,
-  post) pairs, ~15M synapse count summed into weights), **not** the ~54M raw
-  synapses. v1 LIF does not use per-synapse spatial position. Dendritic
-  compartment models would require switching to the much larger raw table.
+- We use the **aggregated** proofread connection table (~15M unique (pre,
+  post) pairs, with each pair's synapse count summed into its weight),
+  **not** the ~54M raw synapses. v1 LIF does not use per-synapse spatial
+  position. Dendritic compartment models would require switching to the much
+  larger raw table.
 - **Neurotransmitter → sign is a hard mapping**, baked into the weights at
   build time: acetylcholine → +1, GABA/glutamate → −1, and the modulatory
   transmitters (dopamine, serotonin, octopamine) plus any prediction below
