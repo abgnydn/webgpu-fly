@@ -25,7 +25,7 @@ async function startRound(page: import("@playwright/test").Page) {
 
 test("replay URL roundtrips events + target seed", async ({ page }) => {
   test.setTimeout(180_000);
-  await page.goto("/?mode=game");
+  await page.goto("/app?mode=game");
   await waitGameReady(page);
   await startRound(page);
 

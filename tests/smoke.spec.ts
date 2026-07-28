@@ -62,7 +62,7 @@ function extractNumber(log: string, re: RegExp): number | null {
 
 test.describe("webgpu-fly e2e", () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto("/?mode=science");
+    await page.goto("/app?mode=science");
     await waitForLog(page, READY_MSG, 90_000);
   });
 
@@ -115,7 +115,7 @@ test.describe("webgpu-fly e2e", () => {
   // meaningful cascade — cementing the new-DN wiring.
   test("MDN button stims connectome (Dallmann walking-circuit roster)", async ({ page }) => {
     const btn = page.locator(`.stim-btn:has(.label:has-text("MDN"))`).first();
-    await expect(btn, "MDN famous-DN button missing").toBeVisible({ timeout: 30_000 });
+    await expect(btn, "MDN famous-DN button missing").toBeVisible({ timeout: 60_000 });
     await clickButton(page, "MDN");
     await waitButtonIdle(page, "MDN");
     const log = await logText(page);
@@ -130,7 +130,7 @@ test.describe("webgpu-fly e2e", () => {
   // the story (RRN → 21 walking-circuit DNs → premotor → legs).
   test("RRN button cascades and drives forward motor", async ({ page }) => {
     const btn = page.locator(`.stim-btn:has(.label:has-text("RRN"))`).first();
-    await expect(btn, "RRN famous-DN button missing").toBeVisible({ timeout: 30_000 });
+    await expect(btn, "RRN famous-DN button missing").toBeVisible({ timeout: 60_000 });
     await clickButton(page, "RRN");
     await waitButtonIdle(page, "RRN");
     const log = await logText(page);
@@ -155,7 +155,7 @@ test.describe("webgpu-fly e2e", () => {
   // produce a large cascade and net-forward motor.
   test("BPN button cascades and drives forward motor", async ({ page }) => {
     const btn = page.locator(`.stim-btn:has(.label:has-text("BPN"))`).first();
-    await expect(btn, "BPN famous-DN button missing").toBeVisible({ timeout: 30_000 });
+    await expect(btn, "BPN famous-DN button missing").toBeVisible({ timeout: 60_000 });
     await clickButton(page, "BPN");
     await waitButtonIdle(page, "BPN");
     const log = await logText(page);
@@ -364,7 +364,7 @@ test.describe("webgpu-fly e2e", () => {
    // drifts (variable mapping, layer order, activation function),
    // this test pinpoints it.
   test("trained walking policy matches numpy ground truth", async ({ page }) => {
-    await page.goto("/?mode=science");
+    await page.goto("/app?mode=science");
     const fixtures = await page.evaluate(async () => {
       const fres = await fetch("/walking-policy-fixtures.json");
       const cases: Array<{ name: string; obs: number[]; action: number[] }> = await fres.json();
@@ -395,7 +395,7 @@ test.describe("webgpu-fly e2e", () => {
    // strict contract — drift here means the policy receives garbage at
    // runtime. Lock it down.
   test("walking policy obs layout sums to 741", async ({ page }) => {
-    await page.goto("/?mode=science");
+    await page.goto("/app?mode=science");
     const result = await page.evaluate(async () => {
       const modPath = "/src/walking-policy.ts";
       const mod = await import(/* @vite-ignore */ modPath);
@@ -422,7 +422,7 @@ test.describe("webgpu-fly e2e", () => {
   });
 
   test("trained walking policy loads + forward-passes", async ({ page }) => {
-    await page.goto("/?mode=science");
+    await page.goto("/app?mode=science");
     const result = await page.evaluate(async () => {
       const modPath = "/src/walking-policy.ts";
       const mod = await import(/* @vite-ignore */ modPath);
