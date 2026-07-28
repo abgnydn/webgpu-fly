@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   build:
-    name: typecheck · build
+    name: typecheck · unit · build
     runs-on: ubuntu-latest
 
     steps:
@@ -35,6 +35,10 @@ jobs:
 
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Unit tests
+        run: npm run test:unit
+        # Needs node >= 22.18 for unflagged TypeScript stripping.
 
       - name: Build
         run: npm run build

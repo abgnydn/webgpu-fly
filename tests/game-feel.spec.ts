@@ -61,6 +61,10 @@ test("pressing Q (DNa01) moves the fly toward the target", async ({ page }) => {
   console.log(`  final   dist: ${d1.toFixed(2)} cm`);
   console.log(`  body x      : ${bodyX?.toFixed(3)} cm (started at 0)`);
 
-  // The fly should have moved at all (body x changed > 0.1 cm).
+  // The fly should have moved at all (body x changed > 0.1 cm)...
   expect(bodyX !== null && Math.abs(bodyX) > 0.1).toBe(true);
+  // ...and that motion must not be away from the target. Slack is
+  // deliberate: open-loop Q can curve (see smoke.spec.ts |turn| < 0.4).
+  expect(d1, `fly moved away from target: ${d0.toFixed(2)} → ${d1.toFixed(2)} cm`)
+    .toBeLessThan(d0 + 0.5);
 });
