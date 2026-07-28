@@ -12,10 +12,8 @@
 //      threshold, atomic-OR spike bit into spikes_curr.
 //
 // Host ping-pongs spikes_prev / spikes_curr each timestep so the gather
-// always reads stable last-step state. The Params struct stayed at its
-// proven 9-field / 36-byte layout; a_syn is a compile-time const here
-// instead of a runtime field, which sidesteps the silent-dispatch
-// failure we hit when expanding the uniform struct.
+// always reads stable last-step state. a_syn is a compile-time const
+// rather than a Params field because the kernel is fixed at dt = 1 ms.
 
 struct Params {
   num_neurons      : u32,
@@ -44,8 +42,9 @@ struct Params {
 const WG_SIZE : u32 = 64u;
 
 // a_syn = exp(-dt / tau_syn) for dt = 1 ms, tau_syn = 5 ms.
-// Hardcoded so we don't have to extend the Params struct (which broke
-// the kernel last time we tried).
+// Const, so it silently assumes SimParams.dtMs = 1 — that host param
+// feeds alpha and the refractory step count but not this value. Make it
+// a Params field if a different dt is ever used.
 const A_SYN  : f32 = 0.81873;
 
 fn spike_bit(idx : u32) -> f32 {

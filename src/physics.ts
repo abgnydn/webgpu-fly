@@ -10,7 +10,7 @@
 import loadMujoco from "@mujoco/mujoco";
 import type {
   MainModule, MjModel, MjData,
-  MjVFS, MjvScene, MjvOption, MjvPerturb, MjvCamera,
+  MjvScene, MjvOption, MjvPerturb, MjvCamera,
 } from "@mujoco/mujoco";
 import { getOrFetch } from "./cache";
 
@@ -20,7 +20,6 @@ export class Physics {
   data!: MjData;
   scene!: MjvScene;
 
-  private vfs!: MjVFS;
   private opt!: MjvOption;
   private perturb!: MjvPerturb;
   private cam!: MjvCamera;
@@ -102,14 +101,14 @@ export class Physics {
       ),
     );
 
-    p.vfs = new p.mujoco.MjVFS();
+    const vfs = new p.mujoco.MjVFS();
     let totalBytes = 0;
     for (const file of meshFiles) {
       const data = fileBytes.get(file);
       if (!data) {
         throw new Error(`flybody bundle missing mesh: ${file}`);
       }
-      p.vfs.addBuffer(file, data);
+      vfs.addBuffer(file, data);
       totalBytes += data.byteLength;
     }
     onProgress?.(`loaded ${meshFiles.length} meshes from bundle (${(totalBytes / 1e6).toFixed(0)} MB)`);
@@ -117,12 +116,15 @@ export class Physics {
 
     // The compiler resolves `<include file="fruitfly.xml"/>` from the
     // VFS, so we have to register fruitfly.xml there as well.
-    p.vfs.addBuffer("fruitfly.xml", flyBytes);
+    vfs.addBuffer("fruitfly.xml", flyBytes);
 
     onProgress?.("compiling MJCF (synchronous; tab may freeze ~5-15s)");
     const tCompile = performance.now();
-    p.model = p.mujoco.MjModel.from_xml_string(floorText, p.vfs);
+    p.model = p.mujoco.MjModel.from_xml_string(floorText, vfs);
     p.data = new p.mujoco.MjData(p.model);
+    // The compiler copies everything it needs into mjModel; holding the
+    // ~140 MB of OBJ bytes past this point just starves the wasm heap.
+    vfs.delete();
     onProgress?.(`MJCF compiled in ${((performance.now() - tCompile) / 1000).toFixed(1)} s`);
 
     // Initialise to flybody's canonical rest pose, matching native
@@ -971,7 +973,14 @@ export class Physics {
     const qpos = this.data.qpos as Float64Array;
     const qposSpring = this.model.qpos_spring as Float64Array;
     if (qposSpring && qposSpring.length === qpos.length) {
-      qpos.set(qposSpring);
+      for (const side of ["left", "right"]) {
+        for (const dof of ["yaw", "roll", "pitch"]) {
+          const j = this.mujoco.mj_name2id(this.model, this.mujoco.mjtObj.mjOBJ_JOINT.value, `wing_${dof}_${side}`);
+          if (j < 0) continue;
+          const adr = (this.model.jnt_qposadr as Int32Array)[j];
+          if (adr >= 0 && adr < qpos.length) qpos[adr] = qposSpring[adr];
+        }
+      }
     }
     if (qpos.length >= 7) {
       qpos[0] = 0; qpos[1] = 0; qpos[2] = 0.1278;
@@ -987,7 +996,6 @@ export class Physics {
     this.opt.delete();
     this.data.delete();
     this.model.delete();
-    this.vfs.delete();
   }
 
   get bodyCount() { return this.model.nbody as number; }

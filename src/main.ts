@@ -135,6 +135,15 @@ function bootSkip(name: "brain" | "vnc" | "body", detail: string) {
   if (det) det.textContent = detail;
   bootMaybeDismiss();
 }
+// Surface a fatal boot error on the overlay itself — in game mode the log
+// pane is hidden, so log() alone leaves the overlay spinning forever.
+function bootFail(msg: string) {
+  const el = document.querySelector<HTMLElement>("#boot .blink");
+  if (!el) return;              // overlay already dismissed/removed
+  el.textContent = msg;
+  el.style.color = "#ff6b6b";
+  el.style.animation = "none";
+}
 
 async function main() {
   // Cache-bust manifest. Maps asset filename → "?v=<12-char sha>" so the
@@ -190,10 +199,14 @@ async function main() {
   let famousDns: Record<string, number[]> = {};
   let famousDnLabels: Record<string, string> = {};
   try {
-    const meta = await (await fetch(metaUrl + versionFor("brain.meta.json"))).json();
+    const r = await fetch(metaUrl + versionFor("brain.meta.json"));
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const meta = await r.json();
     famousDns = meta.famous_dns ?? {};
     famousDnLabels = meta.famous_dn_descriptions ?? {};
-  } catch {}
+  } catch (e) {
+    log(`brain.meta.json unavailable (${(e as Error).message}); famous-DN buttons disabled`, "warn");
+  }
   log("");
 
   const container = document.getElementById("canvas-container") as HTMLDivElement;
@@ -492,6 +505,7 @@ async function main() {
 
   if (!("gpu" in navigator)) {
     log("navigator.gpu missing — open in Chrome / Edge", "err");
+    bootFail("WebGPU unavailable — open in Chrome or Edge");
     return;
   }
   const sim = await FlySim.create(brain, { ...DEFAULT_PARAMS });
@@ -747,74 +761,78 @@ async function main() {
     btn.classList.add("active");
     controls.hidden = true;
 
-    log("");
-    log(`--- ${stim.label} ---`, "ok");
-    const { ext, driven } = stim.build(brain);
-    log(`driving ${driven.toLocaleString()} neurons`);
+    try {
+      log("");
+      log(`--- ${stim.label} ---`, "ok");
+      const { ext, driven } = stim.build(brain);
+      log(`driving ${driven.toLocaleString()} neurons`);
 
-    sim.reset(); resetVnc();
-    sim.setExternalInput(ext);
-    viewer.clearSnapshots();
-    room.resetFly();
+      sim.reset(); resetVnc();
+      sim.setExternalInput(ext);
+      viewer.clearSnapshots();
+      room.resetFly();
 
-    const t0 = performance.now();
-    for (let s = 0; s < N_SNAPSHOTS; s++) {
-      const rate = await sim.captureRollingRate(STEPS_PER_SNAPSHOT);
-      viewer.pushSnapshot(rate);
-      await applyDriveFromSnapshot(rate);
-    }
-    const elapsed = performance.now() - t0;
-    const totalSteps = N_SNAPSHOTS * STEPS_PER_SNAPSHOT;
-    log(`${totalSteps} steps in ${elapsed.toFixed(0)} ms wall (${(elapsed / totalSteps).toFixed(2)} ms/step)`, "ok");
-
-    // Diagnostic: read back Vm and report distribution. If kernel ran
-    // and synaptic drive is reaching neurons, max(Vm) should approach
-    // v_thresh = -45 mV. If Vm sits at -52 (=v_rest) for everyone, the
-    // kernel didn't move — that's a structural bug, not calibration.
-    const vm = await sim.readVm();
-    let vmMin = Infinity, vmMax = -Infinity, vmSum = 0;
-    let aboveRest = 0;
-    for (let i = 0; i < vm.length; i++) {
-      if (vm[i] < vmMin) vmMin = vm[i];
-      if (vm[i] > vmMax) vmMax = vm[i];
-      vmSum += vm[i];
-      if (vm[i] > sim.params.vRest + 0.001) aboveRest++;
-    }
-    log(`vm: min=${vmMin.toFixed(2)} max=${vmMax.toFixed(2)} mean=${(vmSum / vm.length).toFixed(2)} above-rest=${aboveRest.toLocaleString()}`);
-    // Drive persists at the stim's end-of-window value so the user
-    // can watch the body keep walking after the brain sim completes.
-    // Click another stim (or Spontaneous) to change it.
-
-    // Per-class peak active count
-    const peak = new Map<number, number>();
-    for (const snap of [...Array(viewer.numSnapshots)].map((_, i) => viewer["snapshots"][i] as Float32Array)) {
-      const live = new Map<number, number>();
-      for (let i = 0; i < snap.length; i++) {
-        if (snap[i] > 0) live.set(neurons.superClass[i], (live.get(neurons.superClass[i]) ?? 0) + 1);
+      const t0 = performance.now();
+      for (let s = 0; s < N_SNAPSHOTS; s++) {
+        const rate = await sim.captureRollingRate(STEPS_PER_SNAPSHOT);
+        viewer.pushSnapshot(rate);
+        await applyDriveFromSnapshot(rate);
       }
-      for (const [k, v] of live) {
-        if (v > (peak.get(k) ?? 0)) peak.set(k, v);
+      const elapsed = performance.now() - t0;
+      const totalSteps = N_SNAPSHOTS * STEPS_PER_SNAPSHOT;
+      log(`${totalSteps} steps in ${elapsed.toFixed(0)} ms wall (${(elapsed / totalSteps).toFixed(2)} ms/step)`, "ok");
+
+      // Diagnostic: read back Vm and report distribution. If kernel ran
+      // and synaptic drive is reaching neurons, max(Vm) should approach
+      // v_thresh = -45 mV. If Vm sits at -52 (=v_rest) for everyone, the
+      // kernel didn't move — that's a structural bug, not calibration.
+      const vm = await sim.readVm();
+      let vmMin = Infinity, vmMax = -Infinity, vmSum = 0;
+      let aboveRest = 0;
+      for (let i = 0; i < vm.length; i++) {
+        if (vm[i] < vmMin) vmMin = vm[i];
+        if (vm[i] > vmMax) vmMax = vm[i];
+        vmSum += vm[i];
+        if (vm[i] > sim.params.vRest + 0.001) aboveRest++;
       }
-    }
-    log("peak active / total per super_class:");
-    for (const [cls, n] of [...peak.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6)) {
-      const total = sizes.get(cls) ?? 1;
-      log(`  ${SUPER_CLASS[cls] ?? cls}: ${n.toLocaleString()} / ${total.toLocaleString()} (${(100 * n / total).toFixed(1)}%)`);
-    }
-    const snaps = [...Array(viewer.numSnapshots)].map((_, i) => viewer["snapshots"][i] as Float32Array);
-    logHeroValidation(snaps);
+      log(`vm: min=${vmMin.toFixed(2)} max=${vmMax.toFixed(2)} mean=${(vmSum / vm.length).toFixed(2)} above-rest=${aboveRest.toLocaleString()}`);
+      // Drive persists at the stim's end-of-window value so the user
+      // can watch the body keep walking after the brain sim completes.
+      // Click another stim (or Spontaneous) to change it.
 
-    // Wire scrub bar to new snapshot count, autoplay
-    scrub.max = String(viewer.numSnapshots - 1);
-    scrub.value = "0";
-    label.textContent = `snap 0 / ${viewer.numSnapshots}  (t=0 ms)`;
-    controls.hidden = false;
-    playing = true;
-    viewer.setAutoplay(true);
-    playBtn.textContent = "⏸";
+      // Per-class peak active count
+      const peak = new Map<number, number>();
+      for (const snap of [...Array(viewer.numSnapshots)].map((_, i) => viewer["snapshots"][i] as Float32Array)) {
+        const live = new Map<number, number>();
+        for (let i = 0; i < snap.length; i++) {
+          if (snap[i] > 0) live.set(neurons.superClass[i], (live.get(neurons.superClass[i]) ?? 0) + 1);
+        }
+        for (const [k, v] of live) {
+          if (v > (peak.get(k) ?? 0)) peak.set(k, v);
+        }
+      }
+      log("peak active / total per super_class:");
+      for (const [cls, n] of [...peak.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6)) {
+        const total = sizes.get(cls) ?? 1;
+        log(`  ${SUPER_CLASS[cls] ?? cls}: ${n.toLocaleString()} / ${total.toLocaleString()} (${(100 * n / total).toFixed(1)}%)`);
+      }
+      const snaps = [...Array(viewer.numSnapshots)].map((_, i) => viewer["snapshots"][i] as Float32Array);
+      logHeroValidation(snaps);
 
-    buttons.forEach((b) => { b.disabled = false; });
-    busy = false;
+      // Wire scrub bar to new snapshot count, autoplay
+      scrub.max = String(viewer.numSnapshots - 1);
+      scrub.value = "0";
+      label.textContent = `snap 0 / ${viewer.numSnapshots}  (t=0 ms)`;
+      controls.hidden = false;
+      playing = true;
+      viewer.setAutoplay(true);
+      playBtn.textContent = "⏸";
+    } catch (e) {
+      log(`stim failed: ${(e as Error).message}`, "err");
+    } finally {
+      buttons.forEach((b) => { b.disabled = false; });
+      busy = false;
+    }
   }
 
   // --- Famous-DN stim: drive both L+R copies of a named DN ---
@@ -825,60 +843,65 @@ async function main() {
     btn.classList.add("active");
     controls.hidden = true;
 
-    log("");
-    log(`--- DN stim: ${name} (${idxs.length} neurons, ${famousDnLabels[name] ?? ""}) ---`, "ok");
-    const ext = new Float32Array(header.numNeurons);
-    // Direct stim of just 2 DN neurons needs a hefty amplitude to
-    // ignite a real cascade through the alpha-synapse-shaped fan-out.
-    // Lower than ~3.0 leaves DN-with-weak-downstream (DNb01, DNg13,
-    // DNp01) firing only the 2 stimmed cells with no propagation.
-    for (const idx of idxs) ext[idx] = 4.0;
-    sim.reset(); resetVnc();
-    sim.setExternalInput(ext);
-    viewer.clearSnapshots();
-    if (idxs.length > 0) viewer.highlightNeuron(idxs[0]);
-    room.resetFly();
+    try {
+      log("");
+      log(`--- DN stim: ${name} (${idxs.length} neurons, ${famousDnLabels[name] ?? ""}) ---`, "ok");
+      const ext = new Float32Array(header.numNeurons);
+      // Direct stim of just 2 DN neurons needs a hefty amplitude to
+      // ignite a real cascade through the alpha-synapse-shaped fan-out.
+      // Lower than ~3.0 leaves DN-with-weak-downstream (DNb01, DNg13,
+      // DNp01) firing only the 2 stimmed cells with no propagation.
+      for (const idx of idxs) ext[idx] = 4.0;
+      sim.reset(); resetVnc();
+      sim.setExternalInput(ext);
+      viewer.clearSnapshots();
+      if (idxs.length > 0) viewer.highlightNeuron(idxs[0]);
+      room.resetFly();
 
-    const t0 = performance.now();
-    for (let s = 0; s < N_SNAPSHOTS; s++) {
-      const rate = await sim.captureRollingRate(STEPS_PER_SNAPSHOT);
-      viewer.pushSnapshot(rate);
-      await applyDriveFromSnapshot(rate);
+      const t0 = performance.now();
+      for (let s = 0; s < N_SNAPSHOTS; s++) {
+        const rate = await sim.captureRollingRate(STEPS_PER_SNAPSHOT);
+        viewer.pushSnapshot(rate);
+        await applyDriveFromSnapshot(rate);
+      }
+      const elapsed = performance.now() - t0;
+      log(`${N_SNAPSHOTS * STEPS_PER_SNAPSHOT} steps in ${elapsed.toFixed(0)} ms`, "ok");
+
+      {
+        const vm = await sim.readVm();
+        let vmMax = -Infinity;
+        for (let i = 0; i < vm.length; i++) if (vm[i] > vmMax) vmMax = vm[i];
+        const vmAtIdx = idxs.length ? vm[idxs[0]] : NaN;
+        log(`vm: max=${vmMax.toFixed(2)} mV  driven[0]=${vmAtIdx.toFixed(2)} mV`);
+      }
+
+      let recruited = 0;
+      const last = viewer["snapshots"][viewer.numSnapshots - 1] as Float32Array;
+      for (let i = 0; i < last.length; i++) if (last[i] > 0) recruited++;
+      log(`final-window recruits: ${recruited.toLocaleString()} / ${header.numNeurons.toLocaleString()}`);
+      if (recruited > 100) {
+        const snaps = [...Array(viewer.numSnapshots)].map((_, j) => viewer["snapshots"][j] as Float32Array);
+        logHeroValidation(snaps);
+      }
+
+      // Motor command was already produced each step by applyDriveFromSnapshot
+      // → motorFromBrain, which reads this DN's *actual* spike rate from the
+      // window and multiplies by its canonical primitive. No lookup table.
+      log(`brain-driven motor: fwd=${driveFwd.toFixed(2)} turn=${driveTurn.toFixed(2)}`, "ok");
+
+      scrub.max = String(viewer.numSnapshots - 1);
+      scrub.value = "0";
+      label.textContent = `snap 0 / ${viewer.numSnapshots}  (t=0 ms)`;
+      controls.hidden = false;
+      playing = true;
+      viewer.setAutoplay(true);
+      playBtn.textContent = "⏸";
+    } catch (e) {
+      log(`stim failed: ${(e as Error).message}`, "err");
+    } finally {
+      buttons.forEach((b) => { b.disabled = false; });
+      busy = false;
     }
-    const elapsed = performance.now() - t0;
-    log(`${N_SNAPSHOTS * STEPS_PER_SNAPSHOT} steps in ${elapsed.toFixed(0)} ms`, "ok");
-
-    {
-      const vm = await sim.readVm();
-      let vmMax = -Infinity;
-      for (let i = 0; i < vm.length; i++) if (vm[i] > vmMax) vmMax = vm[i];
-      const vmAtIdx = idxs.length ? vm[idxs[0]] : NaN;
-      log(`vm: max=${vmMax.toFixed(2)} mV  driven[0]=${vmAtIdx.toFixed(2)} mV`);
-    }
-
-    let recruited = 0;
-    const last = viewer["snapshots"][viewer.numSnapshots - 1] as Float32Array;
-    for (let i = 0; i < last.length; i++) if (last[i] > 0) recruited++;
-    log(`final-window recruits: ${recruited.toLocaleString()} / ${header.numNeurons.toLocaleString()}`);
-    if (recruited > 100) {
-      const snaps = [...Array(viewer.numSnapshots)].map((_, j) => viewer["snapshots"][j] as Float32Array);
-      logHeroValidation(snaps);
-    }
-
-    // Motor command was already produced each step by applyDriveFromSnapshot
-    // → motorFromBrain, which reads this DN's *actual* spike rate from the
-    // window and multiplies by its canonical primitive. No lookup table.
-    log(`brain-driven motor: fwd=${driveFwd.toFixed(2)} turn=${driveTurn.toFixed(2)}`, "ok");
-
-    scrub.max = String(viewer.numSnapshots - 1);
-    scrub.value = "0";
-    label.textContent = `snap 0 / ${viewer.numSnapshots}  (t=0 ms)`;
-    controls.hidden = false;
-    playing = true;
-    viewer.setAutoplay(true);
-    playBtn.textContent = "⏸";
-    buttons.forEach((b) => { b.disabled = false; });
-    busy = false;
   }
 
   // --- Closed-loop visual mode ---
@@ -900,99 +923,107 @@ async function main() {
     buttons.forEach((b) => { if (b !== btn) b.classList.remove("active"); });
     btn.classList.add("active");
     controls.hidden = true;
-    log("");
-    log(`--- closed-loop visual: track red target ---`, "ok");
-    sim.reset(); resetVnc();
-    viewer.clearSnapshots();
-    room.resetFly();
-    // Reset stale drive from previous stims so the fly starts from
-    // standstill and reacts to THIS loop's sensor signal, not the
-    // last preset's residual.
-    driveFwd = 0;
-    driveTurn = 0;
-    room.setDrive(0, 0);
-    // Yield long enough for the room's render tick to repaint the
-    // retina from the just-reset body pose. Otherwise tick 1 reads
-    // stale retina pixels (from before the reset, when the body had
-    // wandered) and falsely reports the target lost.
-    await new Promise((r) => setTimeout(r, 100));
-    // Sample 4000 optic neurons per side — enough cascade to reach DN
-    // through the connectome's optic→central wiring. Below ~2000 the
-    // signal dissipates before producing meaningful DN activity.
-    const sampleN = 4000;
-    const stride = Math.max(1, Math.floor(opticLeft.length / sampleN));
-    const lSubset: number[] = [];
-    for (let i = 0; i < opticLeft.length; i += stride) lSubset.push(opticLeft[i]);
-    const rStride = Math.max(1, Math.floor(opticRight.length / sampleN));
-    const rSubset: number[] = [];
-    for (let i = 0; i < opticRight.length; i += rStride) rSubset.push(opticRight[i]);
+    try {
+      log("");
+      log(`--- closed-loop visual: track red target ---`, "ok");
+      sim.reset(); resetVnc();
+      viewer.clearSnapshots();
+      room.resetFly();
+      // Reset stale drive from previous stims so the fly starts from
+      // standstill and reacts to THIS loop's sensor signal, not the
+      // last preset's residual.
+      driveFwd = 0;
+      driveTurn = 0;
+      room.setDrive(0, 0);
+      // Yield long enough for the room's render tick to repaint the
+      // retina from the just-reset body pose. Otherwise tick 1 reads
+      // stale retina pixels (from before the reset, when the body had
+      // wandered) and falsely reports the target lost.
+      await new Promise((r) => setTimeout(r, 100));
+      // Sample 4000 optic neurons per side — enough cascade to reach DN
+      // through the connectome's optic→central wiring. Below ~2000 the
+      // signal dissipates before producing meaningful DN activity.
+      const sampleN = 4000;
+      const stride = Math.max(1, Math.floor(opticLeft.length / sampleN));
+      const lSubset: number[] = [];
+      for (let i = 0; i < opticLeft.length; i += stride) lSubset.push(opticLeft[i]);
+      const rStride = Math.max(1, Math.floor(opticRight.length / sampleN));
+      const rSubset: number[] = [];
+      for (let i = 0; i < opticRight.length; i += rStride) rSubset.push(opticRight[i]);
 
-    const ext = new Float32Array(header.numNeurons);
-    let tick = 0;
-    let lostTicks = 0;
-    let lastKnownAngle = 0;
-    let lastKnownArea = 0;
-    while (continuousMode) {
-      // Sense from a real retinal render at the fly's head pose. No
-      // geometry shortcut — pixels of the scene get sampled, red blob
-      // centroid → angle. If target is behind, angle is NaN.
-      const sample = room.retinalSample();
-      const angle = sample.angle;
-      const dist = room.targetDistance();
-      ext.fill(0);
-      if (Number.isFinite(angle) && sample.area > 0) {
-        lostTicks = 0;
-        lastKnownAngle = angle;
-        lastKnownArea = sample.area;
-        const align = 1 - Math.abs(angle) / RETINA_FOV_RAD;     // 0..1
-        const lScale = align * (angle > 0 ? 1.0 : 0.3);
-        const rScale = align * (angle < 0 ? 1.0 : 0.3);
-        const amp = 1.5 + 12 * sample.area;
-        for (const i of lSubset) ext[i] = amp * lScale;
-        for (const i of rSubset) ext[i] = amp * rScale;
-      } else {
-        lostTicks++;
+      const ext = new Float32Array(header.numNeurons);
+      let tick = 0;
+      let lostTicks = 0;
+      let lastKnownAngle = 0;
+      let lastKnownArea = 0;
+      while (continuousMode) {
+        // Sense from a real retinal render at the fly's head pose. No
+        // geometry shortcut — pixels of the scene get sampled, red blob
+        // centroid → angle. If target is behind, angle is NaN.
+        const sample = room.retinalSample();
+        const angle = sample.angle;
+        const dist = room.targetDistance();
+        ext.fill(0);
+        if (Number.isFinite(angle) && sample.area > 0) {
+          lostTicks = 0;
+          lastKnownAngle = angle;
+          lastKnownArea = sample.area;
+          const align = 1 - Math.abs(angle) / RETINA_FOV_RAD;     // 0..1
+          const lScale = align * (angle > 0 ? 1.0 : 0.3);
+          const rScale = align * (angle < 0 ? 1.0 : 0.3);
+          const amp = 1.5 + 12 * sample.area;
+          for (const i of lSubset) ext[i] = amp * lScale;
+          for (const i of rSubset) ext[i] = amp * rScale;
+        } else {
+          lostTicks++;
+        }
+        sim.setExternalInput(ext);
+
+        // Step brain in a short burst (50 ms simulated).
+        const rate = await sim.captureRollingRate(50);
+        viewer.pushSnapshot(rate);
+
+        if (lostTicks === 0) {
+          // Target visible: full brain → spine → body path.
+          await applyDriveFromSnapshot(rate, sample);
+        } else if (lostTicks <= 3) {
+          // Target briefly lost (1-3 ticks). Keep tracking using the
+          // last-known angle — this smooths out single-frame retina
+          // dropouts that the NaN-instant-sweep was making jumpy.
+          // Decay the angle estimate by 1.5× each missed tick so the
+          // memory fades if target stays gone.
+          const decay = 1 + 0.5 * lostTicks;
+          const memSample = { angle: lastKnownAngle * decay, area: lastKnownArea * 0.6 };
+          await applyDriveFromSnapshot(rate, memSample);
+        } else {
+          // Target lost for 4+ ticks: enter sweep mode. Bypass spine
+          // entirely; alternating turn every 8 ticks to find target.
+          const scanDir = lastKnownAngle >= 0 ? 1 : -1;
+          const scanCycle = Math.floor((lostTicks - 4) / 8) % 2 === 0 ? 1 : -1;
+          driveFwd = 0;
+          driveTurn = scanDir * scanCycle * 0.5;
+          room.setDrive(driveFwd, driveTurn);
+        }
+
+        tick++;
+        if (tick <= 10 || tick % 10 === 0) {
+          log(`  tick ${tick}: angle=${(angle * 180 / Math.PI).toFixed(0)}° dist=${dist.toFixed(1)}cm fwd=${driveFwd.toFixed(2)} turn=${driveTurn.toFixed(2)}`);
+        }
+        // Yield to render.
+        await new Promise((r) => setTimeout(r, 0));
       }
-      sim.setExternalInput(ext);
-
-      // Step brain in a short burst (50 ms simulated).
-      const rate = await sim.captureRollingRate(50);
-      viewer.pushSnapshot(rate);
-
-      if (lostTicks === 0) {
-        // Target visible: full brain → spine → body path.
-        await applyDriveFromSnapshot(rate, sample);
-      } else if (lostTicks <= 3) {
-        // Target briefly lost (1-3 ticks). Keep tracking using the
-        // last-known angle — this smooths out single-frame retina
-        // dropouts that the NaN-instant-sweep was making jumpy.
-        // Decay the angle estimate by 1.5× each missed tick so the
-        // memory fades if target stays gone.
-        const decay = 1 + 0.5 * lostTicks;
-        const memSample = { angle: lastKnownAngle * decay, area: lastKnownArea * 0.6 };
-        await applyDriveFromSnapshot(rate, memSample);
-      } else {
-        // Target lost for 4+ ticks: enter sweep mode. Bypass spine
-        // entirely; alternating turn every 8 ticks to find target.
-        const scanDir = lastKnownAngle >= 0 ? 1 : -1;
-        const scanCycle = Math.floor((lostTicks - 4) / 8) % 2 === 0 ? 1 : -1;
-        driveFwd = 0;
-        driveTurn = scanDir * scanCycle * 0.5;
-        room.setDrive(driveFwd, driveTurn);
-      }
-
-      tick++;
-      if (tick <= 10 || tick % 10 === 0) {
-        log(`  tick ${tick}: angle=${(angle * 180 / Math.PI).toFixed(0)}° dist=${dist.toFixed(1)}cm fwd=${driveFwd.toFixed(2)} turn=${driveTurn.toFixed(2)}`);
-      }
-      // Yield to render.
-      await new Promise((r) => setTimeout(r, 0));
+      controls.hidden = false;
+    } catch (e) {
+      log(`stim failed: ${(e as Error).message}`, "err");
+    } finally {
+      // Cleanup when loop exits. Reached only once the in-flight
+      // iteration has finished, so the toggle-off path above can't
+      // re-enable the buttons underneath a running loop.
+      continuousMode = false;
+      btn.classList.remove("active");
+      buttons.forEach((b) => { b.disabled = false; });
+      busy = false;
     }
-    // Cleanup when loop exits.
-    btn.classList.remove("active");
-    buttons.forEach((b) => { b.disabled = false; });
-    busy = false;
-    controls.hidden = false;
   }
   loopBtn.addEventListener("click", () => runContinuousLoop(loopBtn));
 
@@ -1159,50 +1190,57 @@ async function main() {
     buttons.forEach((b) => { b.disabled = true; b.classList.remove("active"); });
     controls.hidden = true;
 
-    const sc = SUPER_CLASS[neurons.superClass[idx]] ?? "?";
-    const hero = neurons.cellType[idx] & 0xff;
-    const heroName = ["", "KC", "MBON", "LHN", "PN", "ORN", "GF", "DN"][hero] ?? "";
-    const tag = heroName ? `${heroName} (${sc})` : sc;
-    log("");
-    log(`--- single-neuron stim: idx ${idx}  [${tag}] ---`, "ok");
+    try {
+      const sc = SUPER_CLASS[neurons.superClass[idx]] ?? "?";
+      const hero = neurons.cellType[idx] & 0xff;
+      const heroName = ["", "KC", "MBON", "LHN", "PN", "ORN", "GF", "DN"][hero] ?? "";
+      const tag = heroName ? `${heroName} (${sc})` : sc;
+      log("");
+      log(`--- single-neuron stim: idx ${idx}  [${tag}] ---`, "ok");
 
-    const ext = new Float32Array(header.numNeurons);
-    ext[idx] = 2.0; // strong pulse on this one cell
-    sim.reset(); resetVnc();
-    sim.setExternalInput(ext);
-    viewer.clearSnapshots();
-    viewer.highlightNeuron(idx);
-    room.resetFly();
+      const ext = new Float32Array(header.numNeurons);
+      ext[idx] = 2.0; // strong pulse on this one cell
+      sim.reset(); resetVnc();
+      sim.setExternalInput(ext);
+      viewer.clearSnapshots();
+      viewer.highlightNeuron(idx);
+      room.resetFly();
 
-    const t0 = performance.now();
-    for (let s = 0; s < N_SNAPSHOTS; s++) {
-      const rate = await sim.captureRollingRate(STEPS_PER_SNAPSHOT);
-      viewer.pushSnapshot(rate);
-      await applyDriveFromSnapshot(rate);
+      const t0 = performance.now();
+      for (let s = 0; s < N_SNAPSHOTS; s++) {
+        const rate = await sim.captureRollingRate(STEPS_PER_SNAPSHOT);
+        viewer.pushSnapshot(rate);
+        await applyDriveFromSnapshot(rate);
+      }
+      const elapsed = performance.now() - t0;
+      log(`${N_SNAPSHOTS * STEPS_PER_SNAPSHOT} steps in ${elapsed.toFixed(0)} ms`, "ok");
+
+      let recruited = 0;
+      const last = viewer["snapshots"][viewer.numSnapshots - 1] as Float32Array;
+      for (let i = 0; i < last.length; i++) if (last[i] > 0) recruited++;
+      log(`final-window recruits: ${recruited.toLocaleString()} / ${header.numNeurons.toLocaleString()}`);
+      if (recruited > 100) {
+        const snaps = [...Array(viewer.numSnapshots)].map((_, j) => viewer["snapshots"][j] as Float32Array);
+        logHeroValidation(snaps);
+      }
+
+      scrub.max = String(viewer.numSnapshots - 1);
+      scrub.value = "0";
+      label.textContent = `snap 0 / ${viewer.numSnapshots}  (t=0 ms)`;
+      controls.hidden = false;
+      playing = true;
+      viewer.setAutoplay(true);
+      playBtn.textContent = "⏸";
+    } catch (e) {
+      log(`stim failed: ${(e as Error).message}`, "err");
+    } finally {
+      buttons.forEach((b) => { b.disabled = false; });
+      busy = false;
     }
-    const elapsed = performance.now() - t0;
-    log(`${N_SNAPSHOTS * STEPS_PER_SNAPSHOT} steps in ${elapsed.toFixed(0)} ms`, "ok");
-
-    let recruited = 0;
-    const last = viewer["snapshots"][viewer.numSnapshots - 1] as Float32Array;
-    for (let i = 0; i < last.length; i++) if (last[i] > 0) recruited++;
-    log(`final-window recruits: ${recruited.toLocaleString()} / ${header.numNeurons.toLocaleString()}`);
-    if (recruited > 100) {
-      const snaps = [...Array(viewer.numSnapshots)].map((_, j) => viewer["snapshots"][j] as Float32Array);
-      logHeroValidation(snaps);
-    }
-
-    scrub.max = String(viewer.numSnapshots - 1);
-    scrub.value = "0";
-    label.textContent = `snap 0 / ${viewer.numSnapshots}  (t=0 ms)`;
-    controls.hidden = false;
-    playing = true;
-    viewer.setAutoplay(true);
-    playBtn.textContent = "⏸";
-    buttons.forEach((b) => { b.disabled = false; });
-    busy = false;
   }
-  viewer.onPick((idx) => { void runSingleNeuronStim(idx); });
+  // Science mode only — the brain pane stays clickable under body.game, and
+  // a 400-step stim there would reset the fly in the middle of a round.
+  if (APP_MODE === "science") viewer.onPick((idx) => { void runSingleNeuronStim(idx); });
 
   if (APP_MODE === "game") {
     // Wait for physics to be ready, then start the game. Game mode owns
@@ -1243,4 +1281,7 @@ async function main() {
   }
 }
 
-main().catch((e) => log(`uncaught: ${(e as Error).stack ?? e}`, "err"));
+main().catch((e) => {
+  log(`uncaught: ${(e as Error).stack ?? e}`, "err");
+  bootFail(`failed: ${(e as Error).message}`);
+});

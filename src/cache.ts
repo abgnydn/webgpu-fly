@@ -2,9 +2,10 @@
 // only download once per machine. Survives hard refreshes (vite's
 // no-cache header otherwise re-downloads on Cmd+Shift+R).
 //
-// Single object store keyed by filename. Stores an `{etag, size, bytes}`
-// blob; on hit we revalidate cheaply by comparing size against the new
-// HEAD/Content-Length. If size matches, we trust IDB.
+// Single object store keyed by the full asset URL. Stores an
+// `{etag, size, bytes}` blob; on hit we serve the cached bytes directly.
+// Invalidation comes from the ?v=<sha> in the key — a new build asks for
+// a different key, and idbPut drops the previous generation.
 
 const DB_NAME = "webgpu-fly-cache";
 const DB_VERSION = 1;
@@ -46,7 +47,17 @@ async function idbPut(key: string, value: Entry): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).put(value, key);
+    const store = tx.objectStore(STORE);
+    store.put(value, key);
+    // Drop older generations of the same asset — the key is the versioned
+    // URL, so a rebuild would otherwise orphan the previous ~140 MB entry
+    // forever. IDB evicts whole origins, never individual records.
+    const base = key.split("?")[0];
+    store.getAllKeys().onsuccess = (e) => {
+      for (const k of (e.target as IDBRequest<IDBValidKey[]>).result) {
+        if (typeof k === "string" && k !== key && k.split("?")[0] === base) store.delete(k);
+      }
+    };
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });

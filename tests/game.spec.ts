@@ -18,7 +18,7 @@ test.describe("game mode", () => {
   test.setTimeout(180_000);
 
   test("HUD + key strip + intro render after boot", async ({ page }) => {
-    await page.goto("/?mode=game");
+    await page.goto("/app?mode=game");
 
     // Wait for game readiness signal in the log.
     await page.waitForFunction(
@@ -43,7 +43,7 @@ test.describe("game mode", () => {
   });
 
   test("SPACE starts a round, key press flashes the strip", async ({ page }) => {
-    await page.goto("/?mode=game");
+    await page.goto("/app?mode=game");
     await page.waitForFunction(
       () => /game mode: ready/.test(
         document.querySelector("#out")?.textContent ?? "",
@@ -74,7 +74,7 @@ test.describe("game mode", () => {
   });
 
   test("HUD timer ticks during a round", async ({ page }) => {
-    await page.goto("/?mode=game");
+    await page.goto("/app?mode=game");
     await page.waitForFunction(
       () => /game mode: ready/.test(
         document.querySelector("#out")?.textContent ?? "",
@@ -99,7 +99,7 @@ test.describe("game mode", () => {
   });
 
   test("science mode keeps classic layout", async ({ page }) => {
-    await page.goto("/?mode=science");
+    await page.goto("/app?mode=science");
     // Original sidebar should be visible (not game mode).
     await expect(page.locator("#side")).toBeVisible();
     await expect(page.locator("#game-hud")).toBeHidden();
@@ -107,7 +107,7 @@ test.describe("game mode", () => {
 });
 
 test("daily-challenge button is visible in intro", async ({ page }) => {
-  await page.goto("/?mode=game");
+  await page.goto("/app?mode=game");
   await page.waitForFunction(
     () => /game mode: ready/.test(document.querySelector("#out")?.textContent ?? ""),
     null,

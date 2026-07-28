@@ -11,6 +11,8 @@
 
 set -euo pipefail
 
+cd "$(dirname "$0")/.."
+
 BUCKET="https://storage.googleapis.com/flyem-manc-exports/v1.0/manc-traced-adjacencies-v1.0"
 PROPS_BUCKET="https://storage.googleapis.com/flyem-manc-exports/v1.0"
 

@@ -36,9 +36,9 @@ brain map, into a real fly's spinal cord, driving a physically simulated body.
 **What this is**
 
 - A whole-animal *Drosophila* nervous system — brain, spinal cord, and body — running end-to-end in a browser tab on WebGPU, no install and no server.
-- Two real connectomes (FlyWire brain + Janelia MANC spine) simulated as leaky integrate-and-fire networks, one fused GPU dispatch per timestep.
+- Two real connectomes (FlyWire brain + Janelia MANC spine) simulated as leaky integrate-and-fire networks, with gather, integrate, threshold and reset fused into a single LIF kernel per timestep.
 - A physically simulated fly body (TuragaLab flybody in MuJoCo/WASM) driven by the spine's motor neurons, with a retina feeding vision back into the brain.
-- A game with **replay-as-URL**: a shared link deterministically re-executes the identical neuron cascade against the same connectome.
+- A game with **replay-as-URL**: a shared link re-fires your keystrokes at the same simulation steps, so the identical neuron cascade re-runs against the same connectome and the same seeded target.
 
 </td>
 <td valign="top" width="33%">
@@ -80,9 +80,12 @@ R DNg13    turning         F MDN      backward
                                                        M         science view
 ```
 
-Win → copy the replay URL. The recipient sees the **identical** simulation —
-deterministic seeded target + recorded keystrokes against the same connectome.
-Daily-challenge mode uses the same target seed for everyone on the same UTC day.
+Win → copy the replay URL. The recipient's brain re-runs the **identical**
+cascade — your keystrokes replayed at the same simulation steps, against the
+same connectome and the same seeded target. The body trajectory can drift: the
+physics advances a fixed number of substeps per animation frame, so it depends
+on display refresh rate. Daily-challenge mode uses the same target seed for
+everyone on the same UTC day.
 
 The landing page at [`/`](https://webgpu-fly.pages.dev) explains the project in
 plain language; the simulator itself lives at
@@ -142,16 +145,19 @@ Roughly the same idea as:
 Differentiators: **(1)** a browser-tab game with a URL — the others need Python,
 a GPU, and a setup hour; **(2)** all three layers (brain + spine + body) wired
 together, not just brain+body; **(3)** replay-as-URL — every shared run is a
-deterministic re-execution anyone can verify, study, or remix.
+re-executable brain trace, not a video.
 
 ---
 
 ## ⏱️ Quickstart (local dev)
 
 ```bash
+# One-time Python env (numpy/pandas/pyarrow for the connectomes, TF for the policy)
+uv venv .venv-tf && uv pip install --python .venv-tf/bin/python numpy pandas pyarrow tensorflow
+
 # Brain (~855 MB FlyWire pull from Zenodo)
 bash tools/download_data.sh
-python3 tools/build_csr.py                    # → public/brain.bin (120 MB)
+.venv-tf/bin/python tools/build_csr.py        # → public/brain.bin (120 MB)
 
 # Spine (~88 MB MANC pull from Janelia GCS)
 bash tools/download_manc.sh
@@ -161,7 +167,10 @@ bash tools/download_manc.sh
 bash tools/download_flybody_policies.sh
 .venv-tf/bin/python tools/extract_walking_policy.py
 
-# TuragaLab flybody MJCF + 85 OBJ meshes (~149 MB) — see public/flybody/meshes.txt
+# TuragaLab flybody MJCF + 85 OBJ meshes (~149 MB) — not redistributed here (Apache-2.0, see NOTICE)
+git clone --depth 1 https://github.com/TuragaLab/flybody /tmp/flybody
+cp /tmp/flybody/flybody/fruitfly/assets/*.obj public/flybody/
+.venv-tf/bin/python tools/bake_flybody_bundle.py   # → public/flybody.bundle.bin
 
 npm install
 npm run dev          # http://localhost:8766

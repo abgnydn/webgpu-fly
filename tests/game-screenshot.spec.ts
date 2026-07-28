@@ -6,7 +6,7 @@ import { test } from "./fixtures";
 test("capture game screenshots", async ({ page }) => {
   test.setTimeout(180_000);
 
-  await page.goto("/?mode=game");
+  await page.goto("/app?mode=game");
   await page.waitForFunction(
     () => /game mode: ready/.test(document.querySelector("#out")?.textContent ?? ""),
     null,

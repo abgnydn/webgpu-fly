@@ -8,6 +8,7 @@ Asset budget:
 | `assets/mujoco-*.wasm` | 8.6 MB | Pages |
 | `public/flybody/*.obj` (85 files) | 134 MB total, biggest 31 MB | R2 |
 | `public/flybody/*.xml` (2 files) | <1 MB | R2 |
+| `public/flybody.bundle.bin` | ~140 MB | R2 |
 | `public/brain.bin` | 120 MB | R2 |
 | `public/brain.meta.json` | 1 KB | R2 |
 | `public/vnc.bin` | 43 MB | R2 |
@@ -46,10 +47,16 @@ VITE_BRAIN_META_URL=https://<r2-public-host>/brain.meta.json
 VITE_VNC_URL=https://<r2-public-host>/vnc.bin
 VITE_VNC_META_URL=https://<r2-public-host>/vnc.meta.json
 VITE_FLYBODY_URL=https://<r2-public-host>/flybody
+VITE_FLYBODY_BUNDLE_URL=https://<r2-public-host>/flybody.bundle.bin
+VITE_WALKING_POLICY_URL=https://<r2-public-host>/walking-policy.bin
+VITE_WALKING_OBS_NORM_URL=https://<r2-public-host>/walking-obs-norm.bin
 ```
 
 `<r2-public-host>` is the bucket's r2.dev subdomain (printed by the
 `dev-url enable` command), or your custom domain.
+
+`VITE_FLYBODY_URL` is legacy — `src/physics.ts` loads only the baked
+bundle, so `VITE_FLYBODY_BUNDLE_URL` is the one that must be set.
 
 `r2-cors.json`:
 ```json
@@ -67,17 +74,10 @@ VITE_FLYBODY_URL=https://<r2-public-host>/flybody
 ```
 
 `public/_headers` already sets long immutable cache on the JS bundle
-and WASM. The R2 bucket should also serve `Cache-Control:
-public, max-age=31536000, immutable` — set this once via:
-
-```bash
-wrangler r2 bucket cors put webgpu-fly-assets --cors-rules '[
-  { "AllowedOrigins": ["https://your-pages.pages.dev","https://your-domain.com"],
-    "AllowedMethods": ["GET","HEAD"],
-    "AllowedHeaders": ["*"],
-    "MaxAgeSeconds": 86400 }
-]'
-```
+and WASM. The R2 objects get `Cache-Control: public, max-age=31536000,
+immutable` from `tools/upload_to_r2.sh` at upload time
+(`--cache-control`), and CORS comes from `r2-cors.json` via the
+`wrangler r2 bucket cors set` step above — nothing further to configure.
 
 ## Path 2 — Vercel
 

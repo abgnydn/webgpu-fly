@@ -25,9 +25,18 @@ async function startRound(page: import("@playwright/test").Page) {
 
 test("replay URL roundtrips events + target seed", async ({ page }) => {
   test.setTimeout(180_000);
-  await page.goto("/?mode=game");
+  await page.goto("/app?mode=game");
   await waitGameReady(page);
   await startRound(page);
+
+  // Seeded target position — the byte-exact, GPU-free determinism check.
+  // Captured before the forced win below, which moves the target.
+  const t0 = await page.evaluate(() => {
+    const g = (window as unknown as {
+      __game?: { ctx: { room: { targetPos: [number, number, number] } } };
+    }).__game!;
+    return [g.ctx.room.targetPos[0], g.ctx.room.targetPos[1]];
+  });
 
   // Press Q for 1.2s, then E for 0.8s.
   await page.keyboard.down("q");
@@ -80,8 +89,8 @@ test("replay URL roundtrips events + target seed", async ({ page }) => {
   expect(replayUrl).toContain("mode=game");
   const m = replayUrl.match(/#r=([A-Za-z0-9_-]+)/);
   expect(m).toBeTruthy();
-  // 2 down + 2 up events = 4 records × 4 bytes = 16 + 4 (seed) = 20 bytes,
-  // base64 ≈ 27 chars. Tolerant assertion.
+  // 2 down + 2 up events = 4 records × 4 bytes = 16 + 6 (dn fingerprint
+  // + seed) = 22 bytes, base64 ≈ 30 chars. Tolerant assertion.
   expect(m![1].length).toBeGreaterThan(20);
 
   // Open the URL in a fresh context (same persistent profile) and verify
@@ -102,7 +111,18 @@ test("replay URL roundtrips events + target seed", async ({ page }) => {
   );
 
   const bodyText = await page2.locator(".overlay-body").textContent();
-  // 4 events: q-down, q-up, e-down, e-up.
+  // 4 events: q-down, q-up, e-down, e-up. Both keys are released before
+  // the forced win, so the win adds no synthetic releases.
   expect(bodyText).toContain("4 keystrokes");
+
+  // Same seed → same LCG → bit-identical target, on a different page.
+  const t1 = await page2.evaluate(() => {
+    const g = (window as unknown as {
+      __game?: { ctx: { room: { targetPos: [number, number, number] } } };
+    }).__game!;
+    return [g.ctx.room.targetPos[0], g.ctx.room.targetPos[1]];
+  });
+  expect(t1[0]).toBeCloseTo(t0[0], 9);
+  expect(t1[1]).toBeCloseTo(t0[1], 9);
   await page2.close();
 });

@@ -3,21 +3,22 @@
 ## Goal
 
 Realtime LIF (leaky integrate-and-fire) simulation of the FlyWire FAFB
-*Drosophila* whole-brain connectome on WebGPU. ~140k neurons, ~5M aggregated
-edges. One fused dispatch per timestep, target ≥1 kHz biological-time on
+*Drosophila* whole-brain connectome on WebGPU. ~140k neurons, ~15M aggregated
+edges. One fused LIF kernel per timestep, target ≥1 kHz biological-time on
 M2 Pro 16 GB.
 
-Companion to `~/Downloads/webgpu-dna`. Same thesis (Geant4-class simulator
+Companion to `webgpu-dna`. Same thesis (Geant4-class simulator
 ported to WebGPU via kernel fusion), different physics. Crucially the fusion
 shape is different — see README.
 
 ## Architecture
 
 - **Data pipeline** (`tools/build_csr.py`): FlyWire connectivity feather +
-  annotations TSV → `public/brain.bin` (binary CSR, ~45 MB). Pre-signs
+  annotations TSV → `public/brain.bin` (binary CSR, ~120 MB). Pre-signs
   weights using presynaptic neurotransmitter so kernel never branches on
   E/I at runtime.
-- **Kernel** (`src/shaders/lif.wgsl`): one fused dispatch per timestep.
+- **Kernel** (`src/shaders/lif.wgsl`): one fused LIF dispatch per timestep,
+  preceded by a bitset-clear dispatch.
   Per neuron: gather presynaptic spikes via CSR row, integrate Vm with
   leak, threshold + reset, write spike bit to output buffer.
 - **Snapshot exporter** (planned): every N ms, copy `vm` or `spike_count`
@@ -50,7 +51,7 @@ CSR weight E×f32:
   pre-signed: sign(pre_nt) × synapse_count
 ```
 
-E ≈ 5M (aggregated proofread pairs). Total bin ≈ 45 MB.
+E ≈ 15M (aggregated proofread pairs). Total bin ≈ 120 MB.
 
 ## Neurotransmitter → sign mapping
 
@@ -77,7 +78,7 @@ Use `soma_*` if non-null, fall back to `pos_*` (synapse-cloud centroid).
   or a giant interneuron).
 - **Dynamics sanity**: with no input, network goes silent within ~50 ms
   (no runaway). With Poisson input to ORNs, downstream Kenyon cells fire
-  sparsely (~1–5% population), antennal lobe PNs show characteristic
+  sparsely (~5–15% population), antennal lobe PNs show characteristic
   rates.
 - **Quantitative**: cross-check firing rates against published FlyWire
   LIF simulations (Shiu et al. 2024 or Lappalainen et al. visual-system
@@ -86,7 +87,7 @@ Use `soma_*` if non-null, fall back to `pos_*` (synapse-cloud centroid).
 ## Known design decisions
 
 - **Aggregated pairs, not raw synapses.** `proofread_connections_783.feather`
-  pre-aggregates by (pre, post) pair. We use that directly — gives ~5M edges
+  pre-aggregates by (pre, post) pair. We use that directly — gives ~15M edges
   vs ~54M raw synapses. v1 LIF doesn't care about per-synapse spatial
   position; if we add dendritic compartments later, switch to the 9.5 GB
   raw table.
@@ -104,13 +105,13 @@ Use `soma_*` if non-null, fall back to `pos_*` (synapse-cloud centroid).
 bash tools/download_data.sh   # ~855 MB Zenodo pull
 python3 tools/build_csr.py    # → public/brain.bin
 npm run dev                   # localhost:8766
-npm run test
+npm run test:e2e              # Playwright; needs WebGPU + assets
 npm run typecheck
 ```
 
 ## Cross-refs
 
-- `~/Downloads/webgpu-dna/CLAUDE.md` — sister project; the kernel-fusion
-  pattern that motivated this.
-- `~/Documents/github/webgpu-fly/tools/build_csr.py` — authoritative
-  binary format spec lives in this file's docstring.
+- https://github.com/abgnydn/webgpu-dna — sister project; the kernel-fusion
+  pattern that motivated this. Its `CLAUDE.md` has the details.
+- `tools/build_csr.py` — authoritative binary format spec lives in this
+  file's docstring.
