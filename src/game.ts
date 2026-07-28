@@ -13,9 +13,9 @@
 //     even though the brain ticks at ~10-15 Hz.
 //   - HUD updates each animation frame: timer, distance, score.
 //   - Win = body within WIN_RADIUS cm of target. Stop clock, show result.
-//   - Replay: record (t_ms, key_idx) tuples; encode with target seed
+//   - Replay: record (t_step, key_idx) tuples; encode with target seed
 //     into URL hash. On load with hash, enter replay mode and replay
-//     keys at recorded times against the same seeded target.
+//     keys at the recorded brain steps against the same seeded target.
 
 import type { FlySim } from "./sim";
 import type { Room } from "./room";
@@ -64,7 +64,7 @@ function dailySeed(): number {
 }
 
 interface ReplayEvent {
-  t: number;     // ms since round start
+  t: number;     // brain steps since round start
   key: number;   // index into dns[]
   down: boolean; // press or release
 }
@@ -74,6 +74,7 @@ export class Game {
   private state: State = "boot";
   private pressed = new Set<number>();
   private roundStart = 0;
+  private roundStartStep = 0;
   private elapsedMs = 0;
   private events: ReplayEvent[] = [];
   private spikeCount = 0;
@@ -100,10 +101,17 @@ export class Game {
   start() {
     this.buildHud();
     this.bindKeys();
-    this.startBrainLoop();
+    this.startBrainLoop().catch((e) => this.ctx.log(`brain loop stopped: ${(e as Error).message}`, "err"));
     this.startHudLoop();
     this.maybeEnterReplay();
     if (this.state === "boot") this.enterIdle();
+  }
+
+  /** Round clock in brain steps. Replay events are stamped and drained
+   * on this clock, not wall time, so playback does not depend on the
+   * display refresh rate or on how fast the brain loop is scheduled. */
+  private roundStep(): number {
+    return this.ctx.sim.currentStep - this.roundStartStep;
   }
 
   // ───── HUD construction ──────────────────────────────────────────
@@ -161,13 +169,13 @@ export class Game {
         if (down) {
           if (!this.pressed.has(i)) {
             this.pressed.add(i);
-            this.events.push({ t: performance.now() - this.roundStart, key: i, down: true });
+            this.events.push({ t: this.roundStep(), key: i, down: true });
             this.flashKey(i, true);
           }
         } else {
           if (this.pressed.has(i)) {
             this.pressed.delete(i);
-            this.events.push({ t: performance.now() - this.roundStart, key: i, down: false });
+            this.events.push({ t: this.roundStep(), key: i, down: false });
             this.flashKey(i, false);
           }
         }
@@ -277,6 +285,7 @@ export class Game {
   private enterPlaying() {
     this.state = "playing";
     this.roundStart = performance.now();
+    this.roundStartStep = this.ctx.sim.currentStep;
     this.overlay.style.display = "none";
     this.ctx.log(`game: round started, target seed ${this.targetSeed.toString(16)}`, "ok");
   }
@@ -284,6 +293,9 @@ export class Game {
   private enterWon() {
     this.state = "won";
     this.elapsedMs = performance.now() - this.roundStart;
+    // Release whatever is still held, otherwise the encoded replay has
+    // an unmatched down and the replayed fly stays stimulated forever.
+    for (const k of this.pressed) this.events.push({ t: this.roundStep(), key: k, down: false });
     this.pressed.clear();
     this.ctx.room.setDrive(0, 0);
     const score = this.computeScore(this.elapsedMs, this.spikeCount);
@@ -293,6 +305,8 @@ export class Game {
     // Behavior recipe: which DNs the player used, how long held in
     // total. Press events have `down: true`; pair each with the next
     // matching `down: false` to compute hold duration.
+    // Event stamps are brain steps; DEFAULT_PARAMS.dtMs is 1.0, so one
+    // step is 1 ms of simulated time and the durations are already ms.
     const holdMs = new Array(this.ctx.dns.length).fill(0);
     const lastDown = new Array(this.ctx.dns.length).fill(-1);
     for (const ev of this.events) {
@@ -304,7 +318,7 @@ export class Game {
     }
     // Close any keys still held at win.
     for (let k = 0; k < holdMs.length; k++) {
-      if (lastDown[k] >= 0) holdMs[k] += Math.max(0, this.elapsedMs - lastDown[k]);
+      if (lastDown[k] >= 0) holdMs[k] += Math.max(0, this.roundStep() - lastDown[k]);
     }
     const ranked = holdMs
       .map((ms, i) => ({ ms, i }))
@@ -402,6 +416,7 @@ export class Game {
     if (this.state !== "replay") return;
     this.overlay.style.display = "none";
     this.roundStart = performance.now();
+    this.roundStartStep = this.ctx.sim.currentStep;
     this.replayIdx = 0;
     this.ctx.log(`game: replaying ${this.replayQueue.length} events`, "ok");
     // Show a persistent "watching replay" banner during playback that
@@ -461,7 +476,7 @@ export class Game {
       if (this.state !== "playing") return;
       if (e.repeat) return;
       this.pressed.add(idx);
-      this.events.push({ t: performance.now() - this.roundStart, key: idx, down: true });
+      this.events.push({ t: this.roundStep(), key: idx, down: true });
       this.flashKey(idx, true);
     });
 
@@ -472,7 +487,7 @@ export class Game {
       if (this.state !== "playing") return;
       if (this.pressed.has(idx)) {
         this.pressed.delete(idx);
-        this.events.push({ t: performance.now() - this.roundStart, key: idx, down: false });
+        this.events.push({ t: this.roundStep(), key: idx, down: false });
         this.flashKey(idx, false);
       }
     });
@@ -499,6 +514,7 @@ export class Game {
       const activeIdxs = this.activeStimIdxs();
       for (const dnIdx of activeIdxs) {
         const dn = this.ctx.dns[dnIdx];
+        if (!dn) continue;
         for (const i of dn.neurons) ext[i] = STIM_AMP;
       }
 
@@ -507,7 +523,7 @@ export class Game {
       this.ctx.viewer.pushSnapshot(rate);
 
       // Sum spikes in this burst for the score.
-      if (this.state === "playing") {
+      if (this.state === "playing" || this.state === "replay") {
         let s = 0;
         for (let i = 0; i < rate.length; i++) s += rate[i];
         // captureRollingRate returns spikes-per-step normalised, so
@@ -520,9 +536,9 @@ export class Game {
       // pass no visual sample.
       await this.ctx.applyDrive(rate, undefined);
 
-      // Replay-mode: advance the key queue by elapsed time.
+      // Replay-mode: advance the key queue by elapsed brain steps.
       if (this.state === "replay" && this.roundStart > 0) {
-        const t = performance.now() - this.roundStart;
+        const t = this.roundStep();
         while (this.replayIdx < this.replayQueue.length
                && this.replayQueue[this.replayIdx].t <= t) {
           const ev = this.replayQueue[this.replayIdx++];
@@ -579,6 +595,15 @@ export class Game {
       const t = performance.now() - this.roundStart;
       this.timerEl.textContent = this.formatTime(t);
       this.spikesEl.textContent = this.spikeCount.toLocaleString();
+      // Reaching the target ends the playback, but deliberately does not
+      // go through enterWon() — the score and the share card belong to
+      // whoever recorded the run, not to whoever opened the link.
+      if (Number.isFinite(dist) && dist < WIN_RADIUS_CM) {
+        this.pressed.clear();
+        this.ctx.room.setDrive(0, 0);
+        this.elapsedMs = t;
+        this.state = "won";
+      }
     } else if (this.state === "won") {
       this.timerEl.textContent = this.formatTime(this.elapsedMs);
     }
@@ -646,19 +671,36 @@ export class Game {
 
   // ───── Replay encoding ───────────────────────────────────────────
 
+  /** FNV-1a over the DN names. Events encode indices into dns[], so a
+   * reorder, insert or removal has to invalidate old URLs; hashing the
+   * roster does that automatically, with no version byte to maintain. */
+  private dnFingerprint(): number {
+    let h = 0x811c9dc5;
+    for (const dn of this.ctx.dns) {
+      for (let i = 0; i < dn.name.length; i++) {
+        h ^= dn.name.charCodeAt(i);
+        h = Math.imul(h, 0x01000193) >>> 0;
+      }
+      h ^= 0x2c; h = Math.imul(h, 0x01000193) >>> 0;  // separator
+    }
+    return h & 0xffff;
+  }
+
   private encodeReplayUrl(): string {
-    // Format: 4B seed (LE) + 4B per event (u24 t_ms LE + u8 (key|down)).
+    // Format: 2B dn fingerprint (LE) + 4B seed (LE) + 4B per event
+    // (u24 t_steps LE + u8 (key|down)).
     const N = this.events.length;
-    const buf = new Uint8Array(4 + 4 * N);
+    const buf = new Uint8Array(6 + 4 * N);
     const v = new DataView(buf.buffer);
-    v.setUint32(0, this.targetSeed, true);
+    v.setUint16(0, this.dnFingerprint(), true);
+    v.setUint32(2, this.targetSeed, true);
     for (let i = 0; i < N; i++) {
       const e = this.events[i];
       const t = Math.min(0xffffff, Math.max(0, Math.round(e.t)));
-      v.setUint8(4 + i * 4 + 0, t & 0xff);
-      v.setUint8(4 + i * 4 + 1, (t >> 8) & 0xff);
-      v.setUint8(4 + i * 4 + 2, (t >> 16) & 0xff);
-      v.setUint8(4 + i * 4 + 3, ((e.key & 0x7f) << 1) | (e.down ? 1 : 0));
+      v.setUint8(6 + i * 4 + 0, t & 0xff);
+      v.setUint8(6 + i * 4 + 1, (t >> 8) & 0xff);
+      v.setUint8(6 + i * 4 + 2, (t >> 16) & 0xff);
+      v.setUint8(6 + i * 4 + 3, ((e.key & 0x7f) << 1) | (e.down ? 1 : 0));
     }
     let bin = "";
     for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
@@ -679,15 +721,24 @@ export class Game {
       const buf = new Uint8Array(bin.length);
       for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
       const v = new DataView(buf.buffer);
-      const seed = v.getUint32(0, true);
-      const N = (buf.length - 4) >> 2;
+      // Anything that is not this build's roster is unplayable: the key
+      // indices mean something else, and pre-fingerprint payloads stamp
+      // wall-clock ms where this build expects brain steps.
+      if (buf.length < 6 || (buf.length - 6) % 4 !== 0
+          || v.getUint16(0, true) !== this.dnFingerprint()) {
+        this.ctx.log("replay was recorded against a different DN set — ignoring", "warn");
+        return;
+      }
+      const seed = v.getUint32(2, true);
+      const N = (buf.length - 6) >> 2;
       const events: ReplayEvent[] = [];
       for (let i = 0; i < N; i++) {
-        const t = v.getUint8(4 + i * 4 + 0)
-                | (v.getUint8(4 + i * 4 + 1) << 8)
-                | (v.getUint8(4 + i * 4 + 2) << 16);
-        const packed = v.getUint8(4 + i * 4 + 3);
-        events.push({ t, key: (packed >> 1) & 0x7f, down: (packed & 1) === 1 });
+        const t = v.getUint8(6 + i * 4 + 0)
+                | (v.getUint8(6 + i * 4 + 1) << 8)
+                | (v.getUint8(6 + i * 4 + 2) << 16);
+        const packed = v.getUint8(6 + i * 4 + 3);
+        const key = (packed >> 1) & 0x7f;
+        if (key < this.ctx.dns.length) events.push({ t, key, down: (packed & 1) === 1 });
       }
       this.enterReplay(seed, events);
       // Set roundStart to 0 so SPACE triggers playback.
