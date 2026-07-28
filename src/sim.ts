@@ -87,6 +87,7 @@ export class FlySim {
       maxStorageBuffersPerShaderStage: adapter.limits.maxStorageBuffersPerShaderStage,
     };
     const device = await adapter.requestDevice({ requiredLimits: required });
+    device.lost.then((info) => console.error(`WebGPU device lost: ${info.reason} — ${info.message}`));
 
     return new FlySim(device, brain, params);
   }
