@@ -938,10 +938,6 @@ export class Physics {
    */
   applyTrainedWalkerActions(actions: Float32Array): void {
     if (actions.length !== 59) throw new Error(`actions must be 59-dim, got ${actions.length}`);
-    // The policy owns body motion on this tick; drop any CPG command
-    // left over from driveLegs so step()'s kinematic assist stays off.
-    this.fwdCmd = 0;
-    this.turnCmd = 0;
     const ctrl = this.data.ctrl as Float64Array;
     for (let i = 0; i < 59; i++) {
       const a = this.walkingActuatorIds[i];
