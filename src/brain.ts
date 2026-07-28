@@ -38,7 +38,7 @@ export async function loadBrain(url: string = "/brain.bin"): Promise<Brain> {
   // skip the ~125 MB network fetch (~30s on the dev server). Cache
   // key is the full URL including ?v=<sha> from assets.json, so a
   // new build naturally invalidates the cache (different URL = new
-  // entry). Old entries are eventually evicted under storage pressure.
+  // entry), and idbPut deletes the previous generation of the same asset.
   const buf = await getOrFetch(url, url);
   return parseBrain(buf);
 }
