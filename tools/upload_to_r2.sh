@@ -24,6 +24,8 @@
 #   VITE_VNC_URL         = https://<bucket>.<account>.r2.dev/vnc.bin
 #   VITE_VNC_META_URL    = https://<bucket>.<account>.r2.dev/vnc.meta.json
 #   VITE_FLYBODY_URL     = https://<bucket>.<account>.r2.dev/flybody
+#   VITE_FLYBODY_BUNDLE_URL = https://<bucket>.<account>.r2.dev/flybody.bundle.bin
+#   VITE_WALKING_REF_URL    = https://<bucket>.<account>.r2.dev/walking-ref.bin
 
 set -euo pipefail
 # Force C locale so printf "%.1f" gets `.` for decimal regardless of
@@ -72,6 +74,8 @@ put "public/vnc.bin"              "vnc.bin"              "application/octet-stre
 put "public/vnc.meta.json"        "vnc.meta.json"        "application/json"
 put "public/walking-policy.bin"   "walking-policy.bin"   "application/octet-stream"
 put "public/walking-obs-norm.bin" "walking-obs-norm.bin" "application/octet-stream"
+put "public/flybody.bundle.bin"   "flybody.bundle.bin"   "application/octet-stream"
+put "public/walking-ref.bin"      "walking-ref.bin"      "application/octet-stream"
 
 echo "uploading flybody MJCF + meshes (immutable) …"
 for f in public/flybody/*.xml; do
@@ -90,4 +94,6 @@ echo "  VITE_BRAIN_META_URL = https://<r2-public-url>/brain.meta.json"
 echo "  VITE_VNC_URL        = https://<r2-public-url>/vnc.bin"
 echo "  VITE_VNC_META_URL   = https://<r2-public-url>/vnc.meta.json"
 echo "  VITE_FLYBODY_URL    = https://<r2-public-url>/flybody"
+echo "  VITE_FLYBODY_BUNDLE_URL = https://<r2-public-url>/flybody.bundle.bin"
+echo "  VITE_WALKING_REF_URL    = https://<r2-public-url>/walking-ref.bin"
 echo "  VITE_ASSET_MANIFEST_URL = https://<r2-public-url>/assets.json"

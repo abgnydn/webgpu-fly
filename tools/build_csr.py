@@ -348,7 +348,7 @@ def main() -> int:
                 famous_dns[label] = idxs
 
     # Resolve community_name buttons (BPN) from Dallmann 2026 Supp Table 1.
-    DALLMANN_TABLE_1 = Path("data/raw/dallmann_2026/supplementary_table_1.xlsx")
+    DALLMANN_TABLE_1 = RAW / "dallmann_2026" / "supplementary_table_1.xlsx"
     if community_name_lookups and DALLMANN_TABLE_1.exists():
         import openpyxl
         wb = openpyxl.load_workbook(DALLMANN_TABLE_1, data_only=True)
@@ -364,6 +364,9 @@ def main() -> int:
                         idxs.append(int(idx))
             if idxs:
                 famous_dns[label] = idxs
+    elif community_name_lookups:
+        print(f"      note: {DALLMANN_TABLE_1} absent — BPN preset skipped "
+              f"(download Dallmann 2026 Supp Table 1 to enable)")
 
     # Walking-circuit DN catalog from Dallmann et al. 2026 (supp fig 2c):
     # 21 cell types in two clusters downstream of RRN+BPN. Saved as a

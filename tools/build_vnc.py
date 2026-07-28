@@ -20,7 +20,8 @@ without modification — only the magic string differs.
     num_neurons   u32      = N
     num_edges     u32      = E
     flags         u32      bit 0: weights are pre-signed by presynaptic NT
-    reserved      u32[12]  pad to 64 B
+                           (bytes 24..36 hold voxel_to_nm in brain.bin; zero in vnc.bin)
+    reserved      u32[10]  pad to 64 B (8 + 4*4 + 40 = 64)
 
   [ Neurons — N × 32 B ]
     pos_x         f32      soma x in nm (from somaLocation)
@@ -246,9 +247,11 @@ def main() -> None:
     # Pre-sign weights by presynaptic NT (same convention as brain.bin).
     print("signing weights by presynaptic neurotransmitter …")
     pre_nt_by_idx = df["predictedNt"].fillna("unknown").astype(str).str.lower().to_numpy()
+    pre_conf = pd.to_numeric(df["predictedNtProb"], errors="coerce").fillna(0.0).to_numpy()
     sign_arr = np.zeros(N, dtype=np.float32)
     for i, nt in enumerate(pre_nt_by_idx):
-        sign_arr[i] = NT_SIGN.get(nt, 0)
+        if pre_conf[i] >= NT_CONF_MIN:
+            sign_arr[i] = NT_SIGN.get(nt, 0)
 
     pre_idx = edges["pre_idx"].to_numpy(dtype=np.uint32)
     post_idx = edges["post_idx"].to_numpy(dtype=np.uint32)
@@ -283,10 +286,7 @@ def main() -> None:
         cell_class[i] = classify(row)
         leg_seg[i] = leg_segment_packed(row)
         # predictedNtProb gives float confidence; default 0
-        try:
-            nt_conf[i] = float(row.get("predictedNtProb") or 0)
-        except Exception:
-            nt_conf[i] = 0.0
+        nt_conf[i] = float(pre_conf[i])
 
     # Write binary
     OUT_BIN.parent.mkdir(parents=True, exist_ok=True)
@@ -296,7 +296,7 @@ def main() -> None:
         f.write(b"WGFLYVNC")                 # magic 8B
         f.write(struct.pack("<III", 1, N, E))  # version, N, E
         f.write(struct.pack("<I", 1))          # flags: bit 0 = pre-signed
-        f.write(b"\x00" * (64 - 8 - 12 - 4))   # pad to 64 B (12*4 bytes left)
+        f.write(b"\x00" * (64 - 8 - 12 - 4))   # pad to 64 B (10 u32 left)
         # Neurons N × 32 B
         for i in range(N):
             x, y, z = pos[i]

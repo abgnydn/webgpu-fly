@@ -11,6 +11,8 @@
 
 set -euo pipefail
 
+cd "$(dirname "$0")/.."
+
 OUT="data/flybody-policies"
 mkdir -p "$OUT"
 
