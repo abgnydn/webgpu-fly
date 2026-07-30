@@ -1277,7 +1277,18 @@ async function main() {
     }).catch(() => {/* boot stage already logged */});
   } else {
     // Science mode: auto-run the first preset so there's something on screen.
-    runStimulus(STIMULI[0], buttons[0]);
+    // Nobody asked for this one, so put the drive back to rest when its
+    // window ends. A user-clicked stim deliberately leaves the drive at its
+    // end-of-window value (see runStimulus); if the boot preset did the same
+    // the fly would already be walking at a saturated forward command before
+    // anyone touched a button, and any DN that commands a similar forward
+    // drive would look like a no-op (measured on DNa01: 0.4% difference in
+    // net travel between clicking it and never touching the page).
+    runStimulus(STIMULI[0], buttons[0]).then(() => {
+      driveFwd = 0;
+      driveTurn = 0;
+      room.setDrive(0, 0);
+    });
   }
 }
 

@@ -23,9 +23,13 @@
 
 You control a fly by firing real **descending neurons** in the
 [FlyWire](https://flywire.ai) connectome. The spike cascade propagates through
-the real wiring; the fly walks because the connectome says so. There is no
-scripted animation — every step you see is an LIF cascade through a real fly's
-brain map, into a real fly's spinal cord, driving a physically simulated body.
+the real wiring, into a real fly's spinal cord, and what comes out of the spine
+is a walking magnitude and a turn bias. Those two numbers modulate a hand-written
+tripod gait and — with the kinematic assist that ships on by default — are also
+written straight into the body's velocity. The connectome simulation is real and
+runs on the GPU every frame; the locomotion layered on top of it is an
+approximation, and every approximation and shortcut is inventoried in
+[`LIMITATIONS.md`](./LIMITATIONS.md).
 
 ---
 
@@ -37,7 +41,7 @@ brain map, into a real fly's spinal cord, driving a physically simulated body.
 
 - A whole-animal *Drosophila* nervous system — brain, spinal cord, and body — running end-to-end in a browser tab on WebGPU, no install and no server.
 - Two real connectomes (FlyWire brain + Janelia MANC spine) simulated as leaky integrate-and-fire networks, with gather, integrate, threshold and reset fused into a single LIF kernel per timestep.
-- A physically simulated fly body (TuragaLab flybody in MuJoCo/WASM) driven by the spine's motor neurons, with a retina feeding vision back into the brain.
+- A physically simulated fly body (TuragaLab flybody in MuJoCo/WASM) driven by a hand-written tripod gait that the spine's motor output scales, with a retina feeding vision back into the brain.
 - A game with **replay-as-URL**: a shared link re-fires your keystrokes at the same simulation steps, so the identical neuron cascade re-runs against the same connectome and the same seeded target.
 
 </td>
@@ -57,7 +61,7 @@ brain map, into a real fly's spinal cord, driving a physically simulated body.
 
 - **The curious public.** A real animal brain you can poke, with a 30-second time-to-first-spike and no setup.
 - **Educators.** Every key fires a named command neuron and you watch the consequence ripple to the legs — the connectome made tangible.
-- **Connectome / WebGPU folks.** A real ~140k-neuron LIF kernel benchmarked honestly in the browser, with the brain→spine→body path wired from real biology.
+- **Connectome / WebGPU folks.** A real ~140k-neuron LIF kernel benchmarked honestly in the browser, with the brain→spine path wired from real biology.
 - **Anyone who wants reproducibility.** Runs are URLs; a replay link is a verifiable brain trace, not a video.
 
 </td>
@@ -103,13 +107,20 @@ mode, ARS evolver, raw spike-rate log.
 | **Spine** | [Janelia MANC](https://www.janelia.org/project-team/flyem/manc-connectome) connectome (Takemura et al. 2024) | 23,188 VNC neurons, 5.2M edges, second WebGPU LIF instance |
 | **Body** | [TuragaLab/flybody](https://github.com/TuragaLab/flybody) MJCF (Vaxenburg et al. 2025, *Nature*) | 67 bodies, 111 actuators, real physics in MuJoCo/WASM |
 | **Eyes** | offscreen render-to-texture from fly head pose | 64×16 retinal sample fed to brain optic neurons |
-| **Walker** | trained RL policy ([Vaxenburg et al. 2025 Figshare](https://janelia.figshare.com/articles/dataset/25309105)) | LayerNormMLP, 741-dim obs → 59 actions, pure-TS forward pass, verified element-wise vs the published checkpoint |
+| **Walker** | trained RL policy ([Vaxenburg et al. 2025 Figshare](https://janelia.figshare.com/articles/dataset/25309105)) | LayerNormMLP, 741-dim obs → 59 actions, pure-TS forward pass, checked element-wise against a numpy re-run of the same extracted weights (`tools/verify_walking_policy.py`) — that validates the port's arithmetic, not the assumed architecture against the original SavedModel |
 
 Brain → spine wiring is by **cell-type name match** (`DNa01` in the brain is the
 same neuron as `DNa01` in the VNC — brain side has the soma, VNC side the axon).
-VNC motor neurons drive the leg actuators. Wire-by-wire from real biology, no
-learned shortcuts in the brain→spine path. (Caveat: it's a name join across two
-*different* animals' connectomes, not a reconstructed synaptic bridge — see
+That path — sensory drive → brain LIF → named DNs → VNC LIF — is a real spike
+cascade across two real connectomes, with nothing learned or scripted in it.
+Below the spine it is an approximation: the VNC's 369 leg motor neurons are
+averaged into six leg-group means, and those become a walking magnitude and a
+turn bias (the forward/backward sign is not MANC's — it comes from the
+hand-wired synthetic spine in `src/vnc.ts`). Those two scalars scale a
+hand-written tripod CPG (`driveLegs`, `src/physics.ts`) that writes the leg
+actuators. The connectome scales that gait; it does not generate its rhythm, and
+the leg phase itself is `sin(sim_time · freq)`. (Caveat: it's a name join across two *different* animals'
+connectomes, not a reconstructed synaptic bridge — see
 [`LIMITATIONS.md`](./LIMITATIONS.md) §5.)
 
 ---

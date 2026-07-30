@@ -222,19 +222,79 @@ test.describe("webgpu-fly e2e", () => {
     expect(log).toContain("applied evolved gait to live body");
   });
 
-  test("body moves after DN-driven walking command", async ({ page }) => {
+  // The "does it walk" gate. Displacement is measured from qpos rather
+  // than read off #drive-readout on purpose: that readout is
+  // physics.bodySpeed = |qvel[0..1]| (src/physics.ts:984-989), and the
+  // kinematic assist assigns those exact qvel slots immediately before
+  // mj_step (src/physics.ts:596-604). A speed assertion therefore reads
+  // back the command that was just written, not the distance the body
+  // covered — with the assist off that readout showed 0.42-2.65 cm/s
+  // while true net travel was 0.07 cm per simulated second (jitter, not
+  // locomotion). Uprightness is asserted alongside because the assist
+  // decouples translation from body state entirely: the fly has been
+  // measured sliding forward at the commanded speed while upside down.
+  test("body covers ground and stays upright under a DN walking command", async ({ page }) => {
     await waitForLog(page, "flybody attached", 120_000);
-    // Click a forward DN; let the brain run, the motor drive set,
-    // and the body integrate for a few seconds.
+    // Click a forward DN; let the brain run and the motor drive set.
     await clickButton(page, "DNa02");
     await waitButtonIdle(page, "DNa02");
-    await page.waitForTimeout(5_000);
+
+    const before = await page.evaluate(() => {
+      const phys = (window as unknown as { __physicsForTest?: { data: { qpos: Float64Array; time: number } } }).__physicsForTest;
+      if (!phys) return null;
+      return { x: phys.data.qpos[0], y: phys.data.qpos[1], t: phys.data.time };
+    });
+    expect(before, "physics handle missing").not.toBeNull();
+
+    // Wall time buys machine-dependent amounts of simulated time (6 s of
+    // wall clock bought 1.8-2.3 sim s on the reference Mac), so the
+    // window is closed on the sim clock, and the threshold below is
+    // cm per SIMULATED second — the portable quantity.
+    const SIM_WINDOW_S = 1.5;
+    await page.waitForFunction(
+      (w: { t0: number; dt: number }) => {
+        const phys = (window as unknown as { __physicsForTest?: { data: { time: number } } }).__physicsForTest;
+        return !!phys && phys.data.time - w.t0 >= w.dt;
+      },
+      { t0: before!.t, dt: SIM_WINDOW_S },
+      { timeout: 60_000 },
+    );
+
+    const after = await page.evaluate(() => {
+      const phys = (window as unknown as { __physicsForTest?: { data: { qpos: Float64Array; time: number } } }).__physicsForTest;
+      if (!phys) return null;
+      const q = phys.data.qpos;
+      // Freejoint quaternion is (w,x,y,z) at qpos[3..6]; the world-z
+      // component of the body's own z-axis is 1 - 2*(x² + y²).
+      // +1 = upright, 0 = on its side, -1 = on its back.
+      return { x: q[0], y: q[1], t: phys.data.time, upright: 1 - 2 * (q[4] * q[4] + q[5] * q[5]) };
+    });
+    expect(after, "physics handle missing").not.toBeNull();
+
+    const dx = after!.x - before!.x;
+    const dy = after!.y - before!.y;
+    const simDt = after!.t - before!.t;
+    const netDisp = Math.hypot(dx, dy);
+    const cmPerSimS = netDisp / simDt;
+    console.log(`[walk-gate] net=${netDisp.toFixed(3)} cm over ${simDt.toFixed(2)} sim s = ${cmPerSimS.toFixed(3)} cm/sim s, upright=${after!.upright.toFixed(3)}`);
+
+    // Reference measurements on the shipped default (kinematic assist
+    // on): 0.80 cm/sim s. Same DN stim with the assist off: 0.07
+    // cm/sim s, the fly pirouetting in place. 0.3 leaves ~2.7x margin
+    // below the pass case and ~4x above the fail case.
+    expect(cmPerSimS, `body didn't cover ground under DNa02 (${netDisp.toFixed(3)} cm in ${simDt.toFixed(2)} sim s)`)
+      .toBeGreaterThan(0.3);
+    // A fly on its back is not walking however far it slid.
+    expect(after!.upright, `fly ended the window not upright (uprightness=${after!.upright.toFixed(3)})`)
+      .toBeGreaterThan(0.5);
+
+    // The readout is still checked, but only for liveness/finiteness —
+    // see above for why its value is not the walking evidence.
     const drive = await page.locator("#drive-readout").innerText();
     // drive-readout has "speed X.YZ cm/s" appended each frame.
     const m = drive.match(/speed (-?[\d.]+) cm\/s/);
     expect(m, `drive readout missing speed: "${drive}"`).not.toBeNull();
-    const speed = parseFloat(m![1]);
-    expect(speed, `body didn't move under DNa02 (speed=${speed} cm/s)`).toBeGreaterThan(0.1);
+    expect(Number.isFinite(parseFloat(m![1])), `drive readout speed non-finite: "${drive}"`).toBe(true);
   });
 
   // Literature-grounded firing-rate assertions. KC sparsity is the
@@ -521,13 +581,32 @@ test.describe("webgpu-fly e2e", () => {
     const dz = after!.z - before!.z;
     console.log(`[rl-walker] before=(${before!.x.toFixed(3)},${before!.y.toFixed(3)},${before!.z.toFixed(3)}) after=(${after!.x.toFixed(3)},${after!.y.toFixed(3)},${after!.z.toFixed(3)}) dx=${dx.toFixed(3)} dy=${dy.toFixed(3)} dz=${dz.toFixed(3)}`);
 
-    // Forward progress: ref says "+x at 1 cm/s for 4s = 4 cm"; we
-    // require some non-trivial advance.
-    expect(dx, `body did not advance forward under RL (dx=${dx.toFixed(3)} cm)`).toBeGreaterThan(0.1);
-    // Lateral drift bounded — body shouldn't strafe sideways more than
-    // it walks forward.
-    expect(Math.abs(dy), `body strafed sideways (dy=${dy.toFixed(3)} cm)`).toBeLessThan(Math.abs(dx) + 1.0);
-    // Body should remain roughly upright (z within a centimeter of spawn).
+    // This test gates what its name says — the policy runs and its
+    // actions reach the actuators — and deliberately does NOT assert
+    // forward progress, because the trained walker does not produce
+    // net forward locomotion in this port.
+    //
+    // It used to assert dx > 0.1, and passed. That was an artifact:
+    // science mode auto-ran a stim at boot which left fwdCmd saturated
+    // at ~1.0, the policy branch never calls driveLegs and nothing
+    // zeroed it, so the kinematic assist kept gliding the body forward
+    // while the policy was nominally in control. With the boot drive
+    // now returned to rest (src/main.ts), the assist is idle here and
+    // the honest number appears: dx = -1.174 cm over the same window.
+    // Under the assist the same window gives +1.227 cm, and the fly has
+    // been measured finishing it upside down. See LIMITATIONS.md §8.
+    //
+    // Re-adding a locomotion assertion here is only meaningful once the
+    // walker actually walks; until then it would encode the artifact.
+    expect(after!.actionStats, "policy action stats missing").toBeTruthy();
+    expect(after!.actionStats!.count, "policy never ticked — actions never reached the body")
+      .toBeGreaterThan(0);
+    expect(Number.isFinite(after!.actionStats!.absMax), "policy actions went non-finite").toBe(true);
+    expect(after!.actionStats!.absMax, "policy emitted all-zero actions").toBeGreaterThan(0);
+    // Body stays in the world: no NaN, no falling through the floor,
+    // no launching. Displacement direction is not asserted (see above).
+    expect(Number.isFinite(dx) && Number.isFinite(dy) && Number.isFinite(dz),
+      `body position went non-finite (dx=${dx}, dy=${dy}, dz=${dz})`).toBe(true);
     expect(Math.abs(dz), `body z drifted (dz=${dz.toFixed(3)} cm)`).toBeLessThan(1.0);
   });
 

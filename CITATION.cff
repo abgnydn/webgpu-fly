@@ -33,13 +33,18 @@ abstract: >-
   leaky integrate-and-fire networks in fused WebGPU compute kernels, with
   presynaptic-neurotransmitter signs baked into the weights so the inner
   loop never branches on excitatory/inhibitory type. Brain command
-  neurons drive the spine by cell-type name match; the spine's motor
-  neurons drive a physically simulated 67-body, 111-actuator TuragaLab
-  flybody model running in MuJoCo compiled to WebAssembly. A 64x16 retina
+  neurons drive the spine by cell-type name match; the spine's 369 leg
+  motor neurons are averaged into a walking magnitude and a turn bias that
+  scale a hand-written tripod gait, which actuates a physically simulated
+  67-body, 111-actuator TuragaLab flybody model running in MuJoCo
+  compiled to WebAssembly — the connectome scales that gait but does not
+  generate its stepping rhythm. A 64x16 retina
   rendered from the fly's head pose feeds back into the brain's optic
   neurons. An optional trained reinforcement-learning walking policy
-  (Vaxenburg et al. 2025) runs as a pure-TypeScript forward pass verified
-  element-wise against the published checkpoint. The project is a game
+  (Vaxenburg et al. 2025) runs as a pure-TypeScript forward pass checked
+  element-wise against an independent NumPy re-run of the same extracted
+  weights, which validates the port's arithmetic but not the assumed
+  layer architecture against the original SavedModel. The project is a game
   with shareable, deterministic replay URLs: a shared link re-executes
   the identical neuron cascade against the same connectome. The brain LIF
   kernel is memory-bandwidth-bound and runs at ~0.25 kHz biological time

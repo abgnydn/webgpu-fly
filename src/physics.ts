@@ -527,8 +527,9 @@ export class Physics {
   }
 
   /** Body-velocity command from the VNC layer; re-asserted by step()
-   * each substep so MuJoCo damping doesn't drain it. Set by driveLegs
-   * each frame. */
+   * each substep so MuJoCo damping doesn't drain it. Written only by
+   * driveLegs — a mode that doesn't call driveLegs (the trained policy)
+   * inherits whatever the CPG last wrote. */
   private fwdCmd = 0;
   private turnCmd = 0;
 
@@ -540,19 +541,38 @@ export class Physics {
    * the assist crawls at ~0.125 cm/s vs the expected ~1 cm/s),
    * which makes the demo unwatchable and breaks every body-motion
    * e2e test. Set to false from console to demo "honest physics":
-   *   (window as any).Physics.kinematicAssistEnabled = false  */
+   *   (window as any).Physics.kinematicAssistEnabled = false
+   *
+   * Enabling the trained policy does not switch it off: fwdCmd/turnCmd
+   * are written only by driveLegs, which the policy path skips, so the
+   * last CPG command — saturated after a stim, zero if the CPG last ran
+   * at rest — keeps driving the freejoint under the policy. Measured
+   * over 16 browser runs, stale command ~1.0: with the assist on the
+   * body translates at 0.80-0.88 cm/sim s whatever is in control — the
+   * CPG, the policy, or nothing — versus 0.029-0.163 cm/sim s with it
+   * off. What the assist writes is the drive scalar, not locomotion. */
   static kinematicAssistEnabled = true;
 
   /** Step physics N times.
    *
-   * Body is driven by leg/wing actuators only — leg motion produces
-   * ground reaction, ground reaction moves body. No qvel writes on
-   * the freejoint translation or yaw (was a kinematic-assist hack
-   * before; toggleable now via Physics.kinematicAssistEnabled).
+   * Leg and wing actuators, contacts and ground reaction are real
+   * MuJoCo. Two direct freejoint qvel writes are not, and both happen
+   * inside the substep loop, immediately before each mj_step:
    *
-   * Stabilizer: pitch/roll angular damper (×0.85 per substep) keeps
-   * the body upright without pinning orientation; the fly can still
-   * tip if it genuinely loses balance. */
+   * 1. Pitch/roll damper — qvel[3] and qvel[4] are multiplied by 0.85
+   *    per substep (×0.039 over a 20-substep control tick, ×0.005 over
+   *    a 32-substep render frame). This is NOT gated by
+   *    kinematicAssistEnabled: it runs in honest mode and under the
+   *    trained policy. Leg and gravity torques about those two axes are
+   *    largely absorbed instead of integrated. It has never been run in
+   *    the off state, so the undamped baseline is unmeasured — do not
+   *    assume the fly stands up without it.
+   *
+   * 2. Kinematic assist — when kinematicAssistEnabled and a drive
+   *    command is set, translation (qvel[0], qvel[1]) and yaw (qvel[5])
+   *    are written from fwdCmd/turnCmd, so body motion is an algebraic
+   *    function of the drive scalars rather than of ground reaction.
+   *    See kinematicAssistEnabled for the measured size of this. */
   step(substeps = 1) {
     const assist = Physics.kinematicAssistEnabled;
     const hasCmd = assist && (Math.abs(this.fwdCmd) > 0.01 || Math.abs(this.turnCmd) > 0.01);
