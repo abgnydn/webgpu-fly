@@ -6,7 +6,7 @@
     <title>webgpu-fly — a real fly brain you can play, in your browser</title>
     <meta
       name="description"
-      content="Control a fruit fly by firing real neurons in its connectome. The whole brain, spinal cord, and body run live in your browser tab — no install. Nothing is scripted; the fly walks because the wiring says so."
+      content="Control a fruit fly by firing real neurons in its connectome. The whole brain, spinal cord, and body run live in your browser tab — no install. The connectome simulation is real; the walking on top of it is an approximation, and we say exactly where."
     />
     <meta property="og:title" content="webgpu-fly — a real fly brain you can play" />
     <meta
@@ -401,7 +401,8 @@
         Scientists mapped every neuron in a fruit fly's brain. This puts that
         whole map — plus its spinal cord and its body — live in your browser tab.
         Press a key, a real neuron fires, the spike spreads through the real
-        wiring, and the fly walks. <b>Nothing here is animated by hand.</b>
+        wiring, and the fly walks. <b>The cascade is real; the leg rhythm it
+        drives is hand-written, and we tell you which is which.</b>
       </p>
       <div class="cta">
         <a class="btn primary" href="app.html">▸ Launch the simulator</a>
@@ -437,12 +438,13 @@
         </p>
         <p class="body reveal">
           The brain talks to the fly's <span class="accent">spinal cord</span>
-          (a second real connectome), which drives the legs of a
+          (a second real connectome), and what the spinal cord decides steers a
           <span class="accent">physically simulated body</span>. Press a key and
           you inject current into specific command neurons, then watch the
-          consequences ripple all the way down to the feet. If the wiring says
-          "this makes the fly walk forward," it walks forward. If it doesn't, it
-          doesn't.
+          consequences ripple all the way down to the legs. What comes out of
+          the connectome is a walking speed and a turn — the stepping rhythm
+          itself is a hand-written tripod gait, not neuron-by-neuron muscle
+          control.
         </p>
       </section>
 
@@ -457,7 +459,7 @@
           </div>
           <div class="layer reveal" style="--lc:#34e3c0">
             <div class="idx">02</div><div class="tag">Spine</div>
-            <div class="desc"><b>Janelia MANC connectome</b> — the fly's ventral nerve cord, its "spinal cord": 23,188 neurons, 5.2&nbsp;million connections. A second live network that turns brain commands into leg movement.</div>
+            <div class="desc"><b>Janelia MANC connectome</b> — the fly's ventral nerve cord, its "spinal cord": 23,188 neurons, 5.2&nbsp;million connections. A second live network that turns brain commands into a walking drive.</div>
           </div>
           <div class="layer reveal" style="--lc:#ffc06b">
             <div class="idx">03</div><div class="tag">Body</div>
@@ -471,8 +473,10 @@
         <p class="body reveal" style="margin-top:24px">
           The brain and spine are joined the way real biology does it: a command
           neuron named <code>DNa01</code> in the brain is the same cell as
-          <code>DNa01</code> in the spinal cord. No learned shortcuts — wire for
-          wire from the real animal.
+          <code>DNa01</code> in the spinal cord. Nothing in that path is learned
+          or scripted — it is wire for wire from the real animal. Past the
+          spinal cord it changes: the motor neurons set a walking speed and a
+          turn, and a hand-written leg rhythm does the actual stepping.
         </p>
       </section>
 
