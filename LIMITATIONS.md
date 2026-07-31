@@ -14,7 +14,10 @@ A second summary, for the body specifically: **the connectome does not walk
 the fly.** Roughly 20.3M connectome edges reach the body as about one scalar
 magnitude plus a turn bias per tick, and those two numbers scale a hand-written
 `sin(t × 10 Hz)` tripod. §8 is the complete shortcut inventory, with measured
-numbers for what the body does once the assist is off.
+numbers for what the body does once the assist is off. A *published RL policy*
+(Vaxenburg et al. 2025) does walk the body under physics with the assist off
+(§4.1) — that policy bypasses the brain and the spine entirely, so it is not
+the fly's own brain doing the walking either.
 
 ---
 
@@ -67,19 +70,49 @@ numbers for what the body does once the assist is off.
 These are the "honest gaps" from the README, restated as limitations. §8 is
 the complete list; these four are the ones with the longest history.
 
-1. **Trained RL walker does not walk.** The published policy checkpoint
-   shipped **without** its `ObservationActionNorm` running mean/std, so the
-   policy expects raw observations. We feed raw obs (which matches native
-   best) or, optionally, a rollout-derived norm; either keeps actions
-   non-saturating (|action| max ≈ 7). But every browser speed number ever
-   recorded for this path — including the "roughly half of native" figure
-   this item used to carry — was measured with the kinematic assist active
-   (item 3), which writes body velocity directly. With the assist off, the
-   fly capsizes within ~1.5 s of the policy being enabled and stays on its
-   back: uprightness −0.851 → −0.978, net travel 0.057–0.317 cm over ~2
-   simulated seconds. The network is self-consistent and the actions are
-   in-distribution; the defect is downstream of it — observation
-   construction, plant, or initial pose. See §8.
+1. **Trained RL walker walks — after four port fixes.** With the kinematic
+   assist explicitly off, the policy drives the body from actuator → ground
+   reaction alone: **2.004–2.021 cm per simulated second** against a 2.0 cm/s
+   command, 5.03–5.08 cm of travel per window, uprightness **+0.997** at the
+   end of the window, and **no capsize in 3 of 3 reps**, with |action| max
+   ≈ 5.9 while upright — inside flybody's native band (~6). Control condition,
+   policy never enabled and assist still off: 0.032 cm/sim s, uprightness
+   0.999 — the fly just stands there, so the locomotion comes from the policy
+   and not from anything else. In the e2e suite (assist at its default) the
+   walker's displacement is dx = +1.642 cm, previously −1.174 cm. Reproduce
+   with `.walkbench.mjs`.
+
+   Until today this item read "does not walk", and it was accurate: with the
+   assist off the fly capsized within ~1.5 s and stayed on its back
+   (uprightness −0.851 → −0.978). The network was self-consistent all along;
+   the defects were four port bugs downstream of it.
+
+   - **`world_zaxis` sign.** We read the third *column* of `xmat` where
+     flybody reads the third *row*, so the fly's tilt sense was inverted on
+     the second-highest-gain input in the network — a positive-feedback loop.
+   - **Spawn height.** `floor.xml` puts the ground plane at z = −0.15 while
+     flybody's `_SPAWN_POS` is calibrated against a plane at z = 0, so every
+     episode opened with ~17.5 ms of free fall. Spawn is now floor-relative
+     and claw clearance is 0.00048 cm instead of 0.15 cm.
+   - **Open-loop reference observations.** The 455 reference-tracking dims
+     never read `qpos` at all — the policy was told "zero tracking error" on
+     every tick. They are now closed-loop against the live body pose:
+     `ref_displacement` is Rᵀ_fly·(refPos − flyPos) and `ref_root_quat` is
+     conj(q_fly) ⊗ refQuat, both against an absolute world-space trajectory.
+   - **Missing actuator dynamics.** flybody applies its `joint_filter`
+     actuator dynamics (`dyntype='filter'`, `dynprm` 0.01 joints / 0.007
+     adhesion) programmatically in `fruitfly.py`, so they never appear in the
+     shipped MJCF and a port reading the XML misses them. The MJCF text is now
+     patched in memory at load; `model.na` went 0 → 78, which both makes the
+     59-dim `actuator_activation` observation real instead of all zeros and
+     softens the plant ~5.5× per control tick.
+
+   **What this does not change:** the pitch/roll damper (§8) is not gated by
+   the assist and runs on this path too, so the uprightness numbers above are
+   not a damper-free result; the forward pass has still never been compared
+   against the published SavedModel (see the end of §8); and this is still not
+   the connectome walking the fly — it is a published RL policy on a path that
+   bypasses the brain and the spine.
 2. **Closed-loop visual reflex is a hand-written angle law.** When the target
    is visible, the default path is `turn ∝ retinal angle`
    (`src/vnc.ts:369-378`), and forward speed is set from retinal area and
@@ -91,28 +124,30 @@ the complete list; these four are the ones with the longest history.
    records the cascade's sign as empirically wrong for tracking under our
    window (`src/vnc.ts:322-326`). It is an opt-in to a path that does not
    currently work, not a working honest alternative.
-3. **Kinematic assist on the body — on by default, and it is the
-   locomotion.** A direct write to the freejoint sets translation and yaw
+3. **Kinematic assist on the body — on by default, and on the CPG path it is
+   the locomotion.** A direct write to the freejoint sets translation and yaw
    velocity from the motor command (`qvel[0]`, `qvel[1]`, `qvel[5]`,
-   re-asserted every substep, `src/physics.ts:596-604`). It is **not** off in
-   RL-policy mode: `fwdCmd`/`turnCmd` are written only by `driveLegs`
-   (`src/physics.ts:717-718`), the policy path skips `driveLegs`
-   (`src/room.ts:633-647`), and nothing clears them — not `reset()`
-   (`src/physics.ts:991-1010`) either — so the last CPG command keeps driving
-   the body throughout "trained walking". The "Honest mode" button turns the
-   assist off everywhere (`Physics.kinematicAssistEnabled`). With it off the
-   body's translation comes only from actuator → ground reaction, but the
-   pitch/roll damper (§8) still runs.
+   re-asserted every substep, `src/physics.ts` `step()`). `fwdCmd`/`turnCmd`
+   are written only by `driveLegs`, which the policy path skips
+   (`src/room.ts:633-647`); the policy path now clears them on takeover, so a
+   stale CPG command no longer drives the body under "trained walking" — see
+   the §8 row. The "Honest mode" button turns the assist off everywhere
+   (`Physics.kinematicAssistEnabled`). With it off the body's translation
+   comes only from actuator → ground reaction, but the pitch/roll damper (§8)
+   still runs.
 4. **Reference walking trajectory.** The trained policy expects a reference
-   trajectory; the default is a procedural straight line. Real fly mocap from
-   the Vaxenburg deposit is wired in as opt-in (`__walkingRefFromMocap`), but
-   it is baked at 50 Hz (`tools/bake_walking_ref.py:46`) and replayed one
-   frame per 2 ms control tick (`src/physics.ts:896`), a 10× rate error, and
-   the 65-frame lookahead exceeds the 57-frame trajectory so the window wraps
-   mid-observation. Measured: enabling it takes |action| max from ~7 to
-   3097–3250 and the fly spins 944–1051° in ~1.8 simulated seconds. The
-   opt-in currently makes the policy's input further out of distribution,
-   not closer.
+   trajectory; the default is a synthetic straight-line trajectory in absolute
+   world space, differenced against the live body pose so the 455
+   reference-tracking observation dims are closed-loop (item 1). It is still
+   synthetic, not a training clip. Real fly mocap from the Vaxenburg deposit
+   is wired in as opt-in (`__walkingRefFromMocap`), and that branch is **not**
+   fixed: it is baked at 50 Hz (`tools/bake_walking_ref.py:46`) and replayed
+   one frame per 2 ms control tick (`src/physics.ts:971`), a 10× rate error,
+   and the 65-frame lookahead exceeds the 57-frame trajectory so the window
+   wraps mid-observation. Measured before the item-1 fixes: enabling it takes
+   |action| max from ~7 to 3097–3250 and the fly spins 944–1051° in ~1.8
+   simulated seconds. The opt-in makes the policy's input further out of
+   distribution, not closer.
 
 ## 5. Brain ↔ spine wiring is name-match, not synaptic
 
@@ -183,19 +218,19 @@ geometry (`src/vnc.ts:369-384`).
 
 | Shortcut | Substitutes for | Honest mode? | Where |
 |---|---|---|---|
-| **Kinematic assist** — writes freejoint `qvel[0]`, `qvel[1]`, `qvel[5]` from `fwdCmd`/`turnCmd`, re-asserted every substep before `mj_step` | ground reaction from leg contact | **yes** (`Physics.kinematicAssistEnabled`) | `src/physics.ts:576-604`, default on at `:554` |
-| **Assist is live in RL-policy mode** — `fwdCmd`/`turnCmd` are written only by `driveLegs`, the policy path skips `driveLegs`, and nothing zeroes them (including `reset()`), so a stale CPG command keeps driving the body under the policy | — | only insofar as it turns the assist off globally; nothing else clears the commands | `src/physics.ts:717-718`, `src/room.ts:633-647`, `src/physics.ts:991-1010` |
-| **Pitch/roll attitude damper** — `qvel[3] *= 0.85; qvel[4] *= 0.85` per substep, ×0.039 per 2 ms control tick | balance, and the body's ability to tip at all | **no** — it sits before and outside the assist guard | `src/physics.ts:592-595` |
-| **Boot stimulus drives itself** — science mode auto-runs `STIMULI[0]` at load, saturating the spine to `fwdCmd = 0.99999` for the length of its window; the drive is put back to rest when that window ends, so the residual no longer survives to the first user click. `decayDrive()` is defined and never called (one grep hit, the definition) | a brain whose drive responds to what you click | **no** | `src/main.ts:1287-1291`, `src/main.ts:499` |
-| **Tripod CPG is the source of leg timing** — `phase = data.time · 10 Hz`, hard-coded gait constants, 3 of 8 DOFs driven per leg | motor-neuron output setting stance/swing | **no** | `src/physics.ts:654-661`, `:663-719`, actuator cache `:213-220` |
-| **Wing motion is hand-written** — 218 Hz analytic stroke, amplitude hard-capped at ×0.2 of flybody's canonical pattern because anything above ~0.25 launches the freejoint body | wing motor neurons (MANC's 66 are read for the readout only) | **no** | `src/physics.ts:494-518`, cap at `:504` |
-| **`jumpImpulse` writes `qvel[2]` directly** | leg extension producing a takeoff | **no** | `src/physics.ts:979-981`, called from `src/main.ts:495` |
-| **Adhesion clamped to 1.0** at init and whenever walk drive < 0.01 — a standing fly is glued to the floor | claw contact and friction holding a stationary fly | **no** | `src/physics.ts:221-227`, `:709-712` |
+| **Kinematic assist** — writes freejoint `qvel[0]`, `qvel[1]`, `qvel[5]` from `fwdCmd`/`turnCmd`, re-asserted every substep before `mj_step`. Still what moves the body on the **CPG path**; the trained-policy path no longer needs it (§4.1) | ground reaction from leg contact | **yes** (`Physics.kinematicAssistEnabled`) | `src/physics.ts` `step()`, default on at `Physics.kinematicAssistEnabled` |
+| **Stale CPG command under the policy — resolved** — `fwdCmd`/`turnCmd` are written only by `driveLegs` and the policy path skips `driveLegs`; nothing used to zero them, so the last CPG command kept driving the body throughout "trained walking". The policy path now clears the stale command on takeover | — | n/a — no longer a live shortcut | `src/physics.ts`, `src/room.ts:633-647` |
+| **Pitch/roll attitude damper** — `qvel[3] *= 0.85; qvel[4] *= 0.85` per substep, ×0.039 per 2 ms control tick | balance, and the body's ability to tip at all | **no** — it sits before and outside the assist guard | `src/physics.ts:656-659` |
+| **Boot stimulus drives itself** — science mode auto-runs `STIMULI[0]` at load, saturating the spine to `fwdCmd = 0.99999` for the length of its window; the drive is put back to rest when that window ends, so the residual no longer survives to the first user click. `decayDrive()` is defined and never called (one grep hit, the definition) | a brain whose drive responds to what you click | **no** | `src/main.ts:1284-1288`, `src/main.ts:499` |
+| **Tripod CPG is the source of leg timing** — `phase = data.time · 10 Hz`, hard-coded gait constants, 3 of 8 DOFs driven per leg | motor-neuron output setting stance/swing | **no** | `src/physics.ts:718-725`, `:727-783`, actuator cache `:277-284` |
+| **Wing motion is hand-written** — 218 Hz analytic stroke, amplitude hard-capped at ×0.2 of flybody's canonical pattern because anything above ~0.25 launches the freejoint body | wing motor neurons (MANC's 66 are read for the readout only) | **no** | `src/physics.ts:558-582`, cap at `:568` |
+| **`jumpImpulse` writes `qvel[2]` directly** | leg extension producing a takeoff | **no** | `src/physics.ts:1063-1065`, called from `src/main.ts:495` |
+| **Adhesion clamped to 1.0** at init and whenever walk drive < 0.01 — a standing fly is glued to the floor | claw contact and friction holding a stationary fly | **no** | `src/physics.ts:285-291`, `:773-776` |
 | **Visual-reflex angle bypass** — `turn ∝ retinal angle`, forward speed from retinal area | the brain's optic→DN contralateral cascade | **yes**, but the brain path falls back to the identical law when cascade asymmetry < 0.05, and the code records the cascade's sign as empirically **wrong** for tracking | `src/vnc.ts:369-378`; brain path `:352-368`; sign note `:322-326` |
 | **Sweep-mode spine bypass** — target lost for 4+ ticks writes a scripted alternating scan turn straight to the body | search behaviour emerging from the brain | **no** | `src/main.ts:998-1005` |
-| **Walking reference** — synthetic open-loop ramp by default; the mocap opt-in is baked at 50 Hz and replayed at 500 Hz, and the 65-frame lookahead exceeds the 57-frame clip | the policy's training reference clip | switches to mocap, which measures **worse** (§4.4) | `src/physics.ts:905-919`, `:896`; `tools/bake_walking_ref.py:46` |
+| **Walking reference** — synthetic world-space trajectory by default, now closed-loop against the live body pose (§4.1), but still synthetic rather than a training clip; the mocap opt-in is **still** baked at 50 Hz and replayed at 500 Hz, and the 65-frame lookahead still exceeds the 57-frame clip | the policy's training reference clip | switches to mocap, which measures **worse** (§4.4) | `src/physics.ts:974-1000`, `:971`; `tools/bake_walking_ref.py:46` |
 | **"Evolve gait (WebGPU ARS)" does not evolve against MuJoCo** — the fitness is a 1-D point-mass rollout with analytic thrust and quadratic drag: no gravity, no ground contact, no body — and the winner is written into the live physics body | optimizing the gait against the actual simulated fly | **no** | `src/shaders/evolve.wgsl:4-6`, `:101-104`; applied at `src/main.ts:1054-1056` |
-| **The speed readout displays the assist** — `bodySpeed` reads `qvel[0..1]`, the exact slots the assist writes immediately before `mj_step` | measured locomotion | **no** | `src/physics.ts:985-989`, rendered at `src/main.ts:739,746` |
+| **The speed readout displays the assist** — `bodySpeed` reads `qvel[0..1]`, the exact slots the assist writes immediately before `mj_step` | measured locomotion | **no** | `src/physics.ts:1069-1073`, rendered at `src/main.ts:739,746` |
 
 One more, about evidence rather than physics: **the walking policy's forward
 pass is not verified against the published SavedModel.**
@@ -216,9 +251,14 @@ second (the portable number; wall-clock distance is machine-dependent).
 "Upright" is the body z-axis' world-z component: +1 upright, −1 upside down.
 These runs were sampled while the boot stimulus still left its saturated drive
 in place, so the two "boot residual" rows and the DNa01 delta below describe a
-build whose idle forward command was 1.000; `src/main.ts:1287-1291` now returns
+build whose idle forward command was 1.000; `src/main.ts:1284-1288` now returns
 it to zero. The assist-on/assist-off contrast, which is what the table is for,
 is unaffected — it is measured within each row.
+
+All 16 runs predate the four port fixes in §4.1, so the two `trained RL policy`
+rows describe the **old** policy path and are kept only because they are what
+those fixes are measured against; §4.1 has what that path does now. Every other
+row is the CPG path or no controller at all, and is current.
 
 | Controller | Assist | cm/sim s | Straightness | Total yaw | Upright |
 |---|---|---|---|---|---|
@@ -226,25 +266,27 @@ is unaffected — it is measured within each row.
 | none (boot residual only) | OFF | 0.052 / 0.053 | 0.036 | −258° / −259° | 0.98 → 0.98 |
 | hand-coded CPG (DNa01) | ON | 0.798 / 0.798 | 0.84 | +113° | 0.98 → 0.98 |
 | hand-coded CPG (DNa01) | OFF | 0.071 / 0.074 | 0.048 / 0.049 | −244° / −245° | 0.99 → 0.98 |
-| trained RL policy | ON | 0.878 / 0.670 | 0.93 / 0.69 | −68° / +152° | **+0.057 → −0.944** / 0.97 → 0.80 |
-| trained RL policy | OFF | 0.029 / 0.163 | 0.53 / 0.48 | −108° / +138° | **−0.851 → −0.978** |
+| trained RL policy (pre-fix, §4.1) | ON | 0.878 / 0.670 | 0.93 / 0.69 | −68° / +152° | **+0.057 → −0.944** / 0.97 → 0.80 |
+| trained RL policy (pre-fix, §4.1) | OFF | 0.029 / 0.163 | 0.53 / 0.48 | −108° / +138° | **−0.851 → −0.978** |
 
 Reading it:
 
 - **The assist is the locomotion, and it does not care what the controller is
   doing.** 0.798–0.878 cm/sim s with the assist on across three completely
   different controller states — no controller at all, the hand-coded CPG, and
-  the trained RL policy. With it off, the same three give 0.029–0.163
+  the pre-fix trained RL policy. With it off, the same three give 0.029–0.163
   cm/sim s. A 4×–30× collapse, and the assist-on number is just the 1.0 cm/s
   command minus what yaw and MuJoCo take back.
 - **Displacement is decoupled from body state.** In one assist-on run the
   fly's uprightness went from +0.057 to −0.944 — it turned over — and it still
   translated at 0.878 cm/sim s with straightness 0.93. A fly gliding smoothly
   forward on its back at the commanded speed.
-- **Assist off is not a slow walk; the direction is wrong.** The CPG
-  accumulates 3.43 cm of path length for 0.163–0.170 cm of net displacement,
-  straightness 0.048, total yaw −245°. The fly pirouettes in place. The legs
-  do move and do couple to the ground; the net effect is rotation and jitter.
+- **On the CPG path, assist off is not a slow walk; the direction is wrong.**
+  The CPG accumulates 3.43 cm of path length for 0.163–0.170 cm of net
+  displacement, straightness 0.048, total yaw −245°. The fly pirouettes in
+  place. The legs do move and do couple to the ground; the net effect is
+  rotation and jitter. This is the CPG path only — it is **not** what the
+  trained-policy path does now (§4.1).
 - **The DNa01 button contributes ~nothing to forward motion.** A page nobody
   clicked travels 1.831 / 1.858 cm; after clicking DNa01, 1.838 / 1.838 cm — a
   0.4% difference. `fwdCmd` was already pinned at 1.000 by the boot residual

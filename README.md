@@ -107,7 +107,7 @@ mode, ARS evolver, raw spike-rate log.
 | **Spine** | [Janelia MANC](https://www.janelia.org/project-team/flyem/manc-connectome) connectome (Takemura et al. 2024) | 23,188 VNC neurons, 5.2M edges, second WebGPU LIF instance |
 | **Body** | [TuragaLab/flybody](https://github.com/TuragaLab/flybody) MJCF (Vaxenburg et al. 2025, *Nature*) | 67 bodies, 111 actuators, real physics in MuJoCo/WASM |
 | **Eyes** | offscreen render-to-texture from fly head pose | 64×16 retinal sample fed to brain optic neurons |
-| **Walker** | trained RL policy ([Vaxenburg et al. 2025 Figshare](https://janelia.figshare.com/articles/dataset/25309105)) | LayerNormMLP, 741-dim obs → 59 actions, pure-TS forward pass, checked element-wise against a numpy re-run of the same extracted weights (`tools/verify_walking_policy.py`) — that validates the port's arithmetic, not the assumed architecture against the original SavedModel |
+| **Walker** | trained RL policy ([Vaxenburg et al. 2025 Figshare](https://janelia.figshare.com/articles/dataset/25309105)) | LayerNormMLP, 741-dim obs → 59 actions, pure-TS forward pass. Walks the body under physics with the kinematic assist **off** — 2.004–2.021 cm per simulated second against a 2.0 cm/s command, upright +0.997, no capsize in 3/3 reps. Checked element-wise against a numpy re-run of the same extracted weights (`tools/verify_walking_policy.py`) — that validates the port's arithmetic, not the assumed architecture against the original SavedModel |
 
 Brain → spine wiring is by **cell-type name match** (`DNa01` in the brain is the
 same neuron as `DNa01` in the VNC — brain side has the soma, VNC side the axon).
@@ -122,6 +122,15 @@ actuators. The connectome scales that gait; it does not generate its rhythm, and
 the leg phase itself is `sin(sim_time · freq)`. (Caveat: it's a name join across two *different* animals'
 connectomes, not a reconstructed synaptic bridge — see
 [`LIMITATIONS.md`](./LIMITATIONS.md) §5.)
+
+The **trained RL walking policy** is a separate path, and it does walk the body
+from leg actuation and ground reaction alone: with the kinematic assist off it
+covers 2.004–2.021 cm per simulated second against a 2.0 cm/s command and stays
+upright (+0.997, no capsize in 3/3 reps), while a run with the policy never
+enabled travels 0.032 cm/sim s. That path bypasses the brain and the spine
+entirely — it is Vaxenburg et al.'s published policy walking the fly, not the
+connectome. [`LIMITATIONS.md`](./LIMITATIONS.md) §4.1 has the numbers and the
+four port defects that had to be fixed to get there.
 
 ---
 
