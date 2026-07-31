@@ -1125,16 +1125,13 @@ async function main() {
         }
       }
     }
-    // 1.0 cm/s is the value where the policy reliably produces
-    // straight-line forward progress; 1.5 had it scoot backward, 3.0
-    // had it curve. The trained policy was optimized against
-    // observation-normalized inputs (running mean/std from the env's
-    // ObservationActionNorm wrapper) which we don't apply here, so
-    // it's slightly out-of-distribution and very sensitive to
-    // ref-trajectory scale. 1.0 cm/s sits in the sweet spot.
-    trainedActiveTargetCmS = 1.0;
+    // 2 cm/s is upstream's inference default — flybody's
+    // constant_speed_trajectory(speed=2) in tasks/trajectory_loaders.py,
+    // the speed the reference trajectory is built at for a rollout of
+    // the released walking checkpoint.
+    trainedActiveTargetCmS = 2.0;
     rlBtn.classList.add("active");
-    log("trained walker: ON (target 1 cm/s forward)", "ok");
+    log("trained walker: ON (target 2 cm/s forward)", "ok");
   });
 
   // Drive hook: the room's render loop calls drivePolicyTick() every

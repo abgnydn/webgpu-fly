@@ -14,6 +14,48 @@ import type {
 } from "@mujoco/mujoco";
 import { getOrFetch } from "./cache";
 
+/** Number of actuators that {@link patchActuatorFilters} gives an
+ * activation state — 70 `general` + 8 `adhesion` in fruitfly.xml. */
+const N_FILTERED_ACTUATORS = 78;
+
+/**
+ * flybody never ships the actuator filter dynamics in the MJCF; it applies
+ * them programmatically after parsing, in
+ * flybody/fruitfly/fruitfly.py:_build (joint_filter=0.01, adhesion_filter=
+ * 0.007, dyntype='filter'):
+ *
+ *     if joint_filter > 0:
+ *         for actuator in root.find_all('actuator'):
+ *             if actuator.tag != 'adhesion':
+ *                 actuator.dyntype = dyntype
+ *                 actuator.dynprm = (joint_filter, )
+ *     if adhesion_filter > 0:
+ *         for actuator in root.find_all('actuator'):
+ *             if actuator.tag == 'adhesion':
+ *                 actuator.dclass.parent.general.dyntype = dyntype
+ *                 actuator.dclass.parent.general.dynprm = (adhesion_filter, )
+ *
+ * We read the shipped XML, so we have to reproduce that here or the plant is
+ * ~5.5x stiffer per control tick than the one the policy was trained on and
+ * the 59-dim actuator_activation observable is all zeros.
+ *
+ * The two rewrites mirror the two loops above: `<general name=` matches only
+ * the 70 joint actuators (defaults-block `<general>` elements are unnamed),
+ * and the adhesion class default is the exact element fruitfly.py reaches
+ * through `dclass.parent.general`.
+ */
+function patchActuatorFilters(xml: string): string {
+  const JOINT = /<general name=/g;
+  const nJoint = (xml.match(JOINT) ?? []).length;
+  const ADHESION = '<general dyntype="none" dynprm="1"/>';
+  if (nJoint !== 70 || !xml.includes(ADHESION)) {
+    throw new Error(`fruitfly.xml actuator filter patch found ${nJoint} joint actuators, adhesion default ${xml.includes(ADHESION)}`);
+  }
+  return xml
+    .replace(JOINT, '<general dyntype="filter" dynprm="0.01" name=')
+    .replace(ADHESION, '<general dyntype="filter" dynprm="0.007"/>');
+}
+
 export class Physics {
   mujoco!: MainModule;
   model!: MjModel;
@@ -33,6 +75,15 @@ export class Physics {
   private legActs: Record<string, { coxa: number; femur: number; tibia: number; adhesion: number }> = {};
   /** Six tarsus-claw legs in flybody. */
   private static readonly LEG_KEYS = ["T1_left", "T1_right", "T2_left", "T2_right", "T3_left", "T3_right"] as const;
+  /** flybody's _SPAWN_POS z (fruitfly.py), measured from the ground. */
+  private static readonly SPAWN_Z = 0.1278;
+  /** World z of the floor plane, read out of the compiled model in
+   * create(). flybody calibrates _SPAWN_POS against dm_control's
+   * floors.Floor() at z=0, but our floor.xml puts the plane at
+   * pos="0 0 -.15", so the spawn has to be taken relative to it. */
+  floorZ = 0;
+  /** Root spawn height in world coords. */
+  get spawnZ() { return Physics.SPAWN_Z + this.floorZ; }
 
   static async create(onProgress?: (msg: string) => void): Promise<Physics> {
     const p = new Physics();
@@ -91,7 +142,7 @@ export class Physics {
       throw new Error("flybody bundle missing floor.xml or fruitfly.xml");
     }
     const floorText = decoder.decode(floorBytes);
-    const flyText = decoder.decode(flyBytes);
+    const flyText = patchActuatorFilters(decoder.decode(flyBytes));
 
     // Mesh refs come from fruitfly.xml; floor.xml only has texture refs.
     const meshFiles = Array.from(
@@ -115,12 +166,16 @@ export class Physics {
     void base;  // base URL retained for backward-compat env var; unused now.
 
     // The compiler resolves `<include file="fruitfly.xml"/>` from the
-    // VFS, so we have to register fruitfly.xml there as well.
-    vfs.addBuffer("fruitfly.xml", flyBytes);
+    // VFS, so we have to register fruitfly.xml there as well — the
+    // filter-patched text, not the raw bundle bytes.
+    vfs.addBuffer("fruitfly.xml", new TextEncoder().encode(flyText));
 
     onProgress?.("compiling MJCF (synchronous; tab may freeze ~5-15s)");
     const tCompile = performance.now();
     p.model = p.mujoco.MjModel.from_xml_string(floorText, vfs);
+    if (p.model.na !== N_FILTERED_ACTUATORS) {
+      throw new Error(`actuator filter patch did not take: na=${p.model.na}, expected ${N_FILTERED_ACTUATORS} of nu=${p.model.nu}`);
+    }
     p.data = new p.mujoco.MjData(p.model);
     // The compiler copies everything it needs into mjModel; holding the
     // ~140 MB of OBJ bytes past this point just starves the wasm heap.
@@ -130,7 +185,7 @@ export class Physics {
     // Initialise to flybody's canonical rest pose, matching native
     // flybody/fruitfly/fruitfly.py:initialize_episode exactly:
     //   - mj_resetData → joints at MJCF default (zero for our model)
-    //   - root xyz = _SPAWN_POS = (0, 0, 0.1278)
+    //   - root xyz = _SPAWN_POS = (0, 0, 0.1278), floor-relative
     //   - root quat = identity
     //   - ONLY wing joints set to qpos_spring (and only when wings
     //     are retracted, which is the trained-walking config).
@@ -141,9 +196,18 @@ export class Physics {
     // (raw policy output saturated way beyond [-1, 1] because the
     // input distribution was OOD).
     p.mujoco.mj_resetData(p.model, p.data);
+    // _SPAWN_POS is a height above the ground plane, and floor.xml:13
+    // puts ours at pos="0 0 -.15" rather than dm_control's z=0. Read the
+    // plane's z back out of the compiled model instead of moving it —
+    // spawning at the literal 0.1278 leaves the lowest claw 0.15 cm in
+    // the air, so every episode opens with ~17.5 ms of free fall and the
+    // touch/force observation blocks read zero while the policy is
+    // trying to establish its gait.
+    const floorGeom = p.mujoco.mj_name2id(p.model, p.mujoco.mjtObj.mjOBJ_GEOM.value, "floor");
+    p.floorZ = floorGeom >= 0 ? (p.model.geom_pos as Float64Array)[3 * floorGeom + 2] : 0;
     const qpos = p.data.qpos as Float64Array;
     if (qpos.length >= 7) {
-      qpos[0] = 0; qpos[1] = 0; qpos[2] = 0.1278;          // _SPAWN_POS
+      qpos[0] = 0; qpos[1] = 0; qpos[2] = p.spawnZ;        // _SPAWN_POS
       qpos[3] = 1; qpos[4] = 0; qpos[5] = 0; qpos[6] = 0;  // identity quat
     }
     // Wing-retract: copy qpos_spring for the 6 wing joints (yaw/roll/
@@ -527,30 +591,27 @@ export class Physics {
   }
 
   /** Body-velocity command from the VNC layer; re-asserted by step()
-   * each substep so MuJoCo damping doesn't drain it. Written only by
-   * driveLegs — a mode that doesn't call driveLegs (the trained policy)
-   * inherits whatever the CPG last wrote. */
+   * each substep so MuJoCo damping doesn't drain it. Written by
+   * driveLegs and cleared by applyTrainedWalkerActions, so the trained
+   * policy does not inherit whatever the CPG last wrote. */
   private fwdCmd = 0;
   private turnCmd = 0;
 
   /** When true, write the brain's motor command directly into the
    * freejoint translational+yaw qvel. Cheats over MuJoCo physics —
    * the legs visibly step but contribute nothing to body motion.
-   * Default ON because browser mujoco_wasm produces ~8× less leg
-   * thrust than native MuJoCo (per state.md the RL walker without
-   * the assist crawls at ~0.125 cm/s vs the expected ~1 cm/s),
-   * which makes the demo unwatchable and breaks every body-motion
-   * e2e test. Set to false from console to demo "honest physics":
+   * Default ON for the CPG path, whose hand-written tripod gait turns
+   * in place rather than travelling without it (LIMITATIONS.md §8).
+   * Set to false from console to demo "honest physics":
    *   (window as any).Physics.kinematicAssistEnabled = false
    *
-   * Enabling the trained policy does not switch it off: fwdCmd/turnCmd
-   * are written only by driveLegs, which the policy path skips, so the
-   * last CPG command — saturated after a stim, zero if the CPG last ran
-   * at rest — keeps driving the freejoint under the policy. Measured
-   * over 16 browser runs, stale command ~1.0: with the assist on the
-   * body translates at 0.80-0.88 cm/sim s whatever is in control — the
-   * CPG, the policy, or nothing — versus 0.029-0.163 cm/sim s with it
-   * off. What the assist writes is the drive scalar, not locomotion. */
+   * It never applies under the trained policy: applyTrainedWalkerActions
+   * clears fwdCmd/turnCmd, so hasCmd below is false whenever the policy
+   * is in control. Measured over 16 browser runs with a ~1.0 command,
+   * the assist translates the body at 0.80-0.88 cm/sim s whatever was in
+   * control — the CPG, the pre-fix policy, or nothing — versus
+   * 0.029-0.163 cm/sim s with it off. What the assist writes on the CPG
+   * path is the drive scalar, not locomotion. */
   static kinematicAssistEnabled = true;
 
   /** Step physics N times.
@@ -732,9 +793,10 @@ export class Physics {
   /**
    * Build the 741-dim observation vector the trained walking policy
    * expects from current mujoco_wasm state, in dm_control's
-   * alphabetical concat order. Ref trajectory is generated forward
-   * at the given target velocity (cm/s) for 65 frames at the env's
-   * 50 Hz tick.
+   * alphabetical concat order. Ref trajectory is an absolute world-space
+   * line running forward from the spawn at the given target velocity
+   * (cm/s), sampled for 65 frames at the env's 500 Hz control tick and
+   * reported relative to the live root pose.
    *
    * Caller fills the result into a Float32Array via the slot offsets
    * in WALKING_OBS_LAYOUT (walking-policy.ts). This method writes
@@ -768,11 +830,13 @@ export class Physics {
     // ---- 3..61: actuator_activation (59 in MJCF declaration order) ---
     // dm_control fills this via observable.MJCFFeature('act', actuators)
     // where actuators = mjcf_model.find_all('actuator') — i.e. MJCF
-    // declaration order, NOT the policy's action class order. Adhesion
-    // actuators have no act state (dyntype=none), so they appear as 0.
+    // declaration order, NOT the policy's action class order. data.act is
+    // indexed by activation slot, not actuator id, so go through actadr.
+    const actadr = this.model.actuator_actadr as Int32Array;
     for (let i = 0; i < 59; i++) {
       const a = this.walkingActivationIds[i];
-      const v = (act && a >= 0 && act.length > a) ? act[a] : 0;
+      const adr = a >= 0 ? actadr[a] : -1;
+      const v = (act && adr >= 0 && act.length > adr) ? act[adr] : 0;
       obs[off + i] = v;
     }
     off += 59;
@@ -835,8 +899,19 @@ export class Physics {
     off += 85;
     // ---- 274..468: ref_displacement (65×3) ---------------------------
     // ---- 469..728: ref_root_quat (65×4) ------------------------------
+    // Both blocks are DeepMimic-style TRACKING ERRORS: the reference pose
+    // over the next 65 control ticks, expressed in the CURRENT body frame
+    // (flybody/tasks/base.py FruitFlyTask.ref_displacement / .ref_root_quat,
+    // registered in walk_imitation.py; they call dm_control's
+    // Entity.global_vector_to_local_frame — np.dot(vec, xmat) == R^T·vec —
+    // and quaternions.py get_dquat_local = mult_quat(reciprocal_quat(q), r),
+    // reciprocal == conj here since MuJoCo keeps the root qpos quat unit):
+    //   ref_displacement[f] = R_fly^T · (ref_pos[step+f] − fly_pos)
+    //   ref_root_quat[f]    = conj(q_fly) ⊗ ref_quat[step+f]
+    // f = 0 is the CURRENT error (upstream uses ref_displacement[0] as
+    // its episode-termination distance), not the first future frame.
     // Two paths:
-    //  (a) Default: synthetic straight-line forward ref + identity quat.
+    //  (a) Default: synthetic constant-speed straight line from spawn.
     //      Robust, matches what's been e2e-tested.
     //  (b) Opt-in: replay real fly mocap from public/walking-ref.bin
     //      (baked by tools/bake_walking_ref.py from the Vaxenburg 2025
@@ -846,44 +921,41 @@ export class Physics {
       && (typeof globalThis !== "undefined"
         && (globalThis as { __walkingRefFromMocap?: boolean }).__walkingRefFromMocap === true);
 
+    // Live root pose. thorax carries the freejoint, so qpos[0..6] IS the
+    // root body pose (xyz, then w,x,y,z).
+    const px = qpos[0], py = qpos[1], pz = qpos[2];
+    const qw = qpos[3], qx = qpos[4], qy = qpos[5], qz = qpos[6];
+    // Row-major body→world R of the live root, applied transposed below:
+    // R^T row i is column i of R = (r0i, r1i, r2i). Same convention as
+    // appendages_pos above.
+    const r00 = 1 - 2 * (qy * qy + qz * qz);
+    const r01 = 2 * (qx * qy - qw * qz);
+    const r02 = 2 * (qx * qz + qw * qy);
+    const r10 = 2 * (qx * qy + qw * qz);
+    const r11 = 1 - 2 * (qx * qx + qz * qz);
+    const r12 = 2 * (qy * qz - qw * qx);
+    const r20 = 2 * (qx * qz - qw * qy);
+    const r21 = 2 * (qy * qz + qw * qx);
+    const r22 = 1 - 2 * (qx * qx + qy * qy);
+    // conj(q_fly) — expresses the reference orientation in the body frame.
+    const iqw = qw, iqx = -qx, iqy = -qy, iqz = -qz;
+    const dispOff = off;
+    const quatOff = off + 195;
+
     if (useMocap) {
       const ref = this.walkingRef!;
       const T = ref.numFrames;
       const step = this.walkingRefStep % T;
-      const px = ref.qpos[step * 7 + 0];
-      const py = ref.qpos[step * 7 + 1];
-      const pz = ref.qpos[step * 7 + 2];
-      const qw = ref.qpos[step * 7 + 3];
-      const qx = ref.qpos[step * 7 + 4];
-      const qy = ref.qpos[step * 7 + 5];
-      const qz = ref.qpos[step * 7 + 6];
-      // Mocap pose at `step`: rotation matrix (mocap_R) and inverse quat.
-      // R^T columns = mocap body x/y/z axes in world; we use R^T to
-      // express world-frame deltas in mocap's body frame at step.
-      const r00 = 1 - 2 * (qy * qy + qz * qz);
-      const r01 = 2 * (qx * qy - qw * qz);
-      const r02 = 2 * (qx * qz + qw * qy);
-      const r10 = 2 * (qx * qy + qw * qz);
-      const r11 = 1 - 2 * (qx * qx + qz * qz);
-      const r12 = 2 * (qy * qz - qw * qx);
-      const r20 = 2 * (qx * qz - qw * qy);
-      const r21 = 2 * (qy * qz + qw * qx);
-      const r22 = 1 - 2 * (qx * qx + qy * qy);
-      // q_inv(mocap_q) — used to express mocap_q[step+f] in body frame.
-      const iqw = qw, iqx = -qx, iqy = -qy, iqz = -qz;
-      let dispOff = off;
-      let quatOff = off + 195;
       for (let f = 0; f < 65; f++) {
         const idx = ((step + f) % T) * 7;
         const fx = ref.qpos[idx + 0] - px;
         const fy = ref.qpos[idx + 1] - py;
-        const fz = ref.qpos[idx + 2] - pz;
-        // R^T applied to world-frame delta = body-frame future motion.
-        // R^T row i is column i of R = (r0i, r1i, r2i).
+        // Clip heights are anchored to dm_control's floor at z=0 (see
+        // tools/bake_walking_ref.py), so shift them onto our plane.
+        const fz = ref.qpos[idx + 2] + this.floorZ - pz;
         obs[dispOff + 3 * f + 0] = r00 * fx + r10 * fy + r20 * fz;
         obs[dispOff + 3 * f + 1] = r01 * fx + r11 * fy + r21 * fz;
         obs[dispOff + 3 * f + 2] = r02 * fx + r12 * fy + r22 * fz;
-        // q_local = q_inv(mocap_q[step]) ⊗ mocap_q[step+f]
         const fqw = ref.qpos[idx + 3];
         const fqx = ref.qpos[idx + 4];
         const fqy = ref.qpos[idx + 5];
@@ -896,27 +968,33 @@ export class Physics {
       this.walkingRefStep = (this.walkingRefStep + 1) % T;
       off += 195 + 260;
     } else {
-      // Default: synthetic forward straight-line ref + identity quat.
-      // dtFrame = flybody's _WALK_CONTROL_TIMESTEP (2 ms = 500 Hz). The
-      // trained policy was trained with this exact lookahead step, so
-      // feeding it 1/50 (which we used to use) made every ref value
-      // 10× larger than the policy expected — pushed obs out of
-      // distribution and the policy produced garbage actions.
+      // Upstream inference default: constant_speed_trajectory(n_steps=300,
+      // speed=2, init_pos=_SPAWN_POS, control_timestep=2e-3) from
+      // tasks/trajectory_loaders.py — an ABSOLUTE world trajectory that
+      // starts at the spawn and marches along +x at one frame per
+      // control tick, root quat identity throughout. It is a moving
+      // target: a fly that doesn't walk accumulates a growing error.
+      // dtFrame = flybody's _WALK_CONTROL_TIMESTEP (2 ms = 500 Hz), the
+      // rate buildWalkingObservation itself is called at.
       const dtFrame = 0.002;
       const stepCm = targetSpeedCmPerS * dtFrame;
+      const step = this.walkingRefStep;
+      const refZ = this.spawnZ;
       for (let f = 0; f < 65; f++) {
-        obs[off + 3 * f + 0] = (f + 1) * stepCm;
-        obs[off + 3 * f + 1] = 0;
-        obs[off + 3 * f + 2] = 0;
+        const fx = (step + f) * stepCm - px;
+        const fy = -py;
+        const fz = refZ - pz;
+        obs[dispOff + 3 * f + 0] = r00 * fx + r10 * fy + r20 * fz;
+        obs[dispOff + 3 * f + 1] = r01 * fx + r11 * fy + r21 * fz;
+        obs[dispOff + 3 * f + 2] = r02 * fx + r12 * fy + r22 * fz;
+        // conj(q_fly) ⊗ identity == conj(q_fly).
+        obs[quatOff + 4 * f + 0] = iqw;
+        obs[quatOff + 4 * f + 1] = iqx;
+        obs[quatOff + 4 * f + 2] = iqy;
+        obs[quatOff + 4 * f + 3] = iqz;
       }
-      off += 195;
-      for (let f = 0; f < 65; f++) {
-        obs[off + 4 * f + 0] = 1;
-        obs[off + 4 * f + 1] = 0;
-        obs[off + 4 * f + 2] = 0;
-        obs[off + 4 * f + 3] = 0;
-      }
-      off += 260;
+      this.walkingRefStep++;
+      off += 195 + 260;
     }
     // ---- 729..734: touch (6, buffered mean) -------------------------
     for (let i = 0; i < 6; i++) {
@@ -931,13 +1009,16 @@ export class Physics {
     }
     off += 3;
     // ---- 738..740: world_zaxis (z-axis of world in body frame) ------
-    // Reading thorax xmat directly: the third COLUMN (entries 2, 5, 8)
-    // is the body-frame projection of world +z. Equivalent to "what
-    // direction does up point to in fly coords."
+    // xmat is the row-major body→world matrix R, so world +z expressed
+    // in body coords is Rᵀ·e_z = the third ROW (entries 6, 7, 8). The
+    // third column is R·e_z, the body's own z in world coords — the
+    // transpose, which negates pitch and roll for small tilts. Same
+    // convention as appendages_pos above. flybody: fruitfly.py
+    // world_zaxis = MJCFFeature('xmat', root_body)[6:].
     if (this.thoraxBodyId >= 0) {
       const m = 9 * this.thoraxBodyId;
-      obs[off + 0] = xmat[m + 2];
-      obs[off + 1] = xmat[m + 5];
+      obs[off + 0] = xmat[m + 6];
+      obs[off + 1] = xmat[m + 7];
       obs[off + 2] = xmat[m + 8];
     }
     off += 3;
@@ -958,6 +1039,10 @@ export class Physics {
    */
   applyTrainedWalkerActions(actions: Float32Array): void {
     if (actions.length !== 59) throw new Error(`actions must be 59-dim, got ${actions.length}`);
+    // The policy owns body motion on this tick; drop any CPG command
+    // left over from driveLegs so step()'s kinematic assist stays off.
+    this.fwdCmd = 0;
+    this.turnCmd = 0;
     const ctrl = this.data.ctrl as Float64Array;
     for (let i = 0; i < 59; i++) {
       const a = this.walkingActuatorIds[i];
@@ -1003,9 +1088,10 @@ export class Physics {
       }
     }
     if (qpos.length >= 7) {
-      qpos[0] = 0; qpos[1] = 0; qpos[2] = 0.1278;
+      qpos[0] = 0; qpos[1] = 0; qpos[2] = this.spawnZ;
       qpos[3] = 1; qpos[4] = 0; qpos[5] = 0; qpos[6] = 0;
     }
+    this.walkingRefStep = 0;
     this.mujoco.mj_forward(this.model, this.data);
   }
 

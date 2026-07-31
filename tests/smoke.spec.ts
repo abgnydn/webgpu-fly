@@ -523,9 +523,10 @@ test.describe("webgpu-fly e2e", () => {
   // End-to-end policy → body wiring: enable the toggle, run a few
    // physics frames, ensure (a) the policy was invoked at least once,
    // (b) actions written to mujoco are bounded, (c) the body didn't
-   // explode (positions stay finite, fly remains in scene). This is
-   // the lock for the trained-walker pipeline as a whole — observation
-   // builder, policy forward pass, action mapping, all in one.
+   // explode (positions stay finite, fly remains in scene), (d) the fly
+   // actually walks forward and stays on its feet. This is the lock for
+   // the trained-walker pipeline as a whole — observation builder,
+   // policy forward pass, action mapping, all in one.
   test("trained walker toggle → policy actions reach the body", async ({ page }) => {
     await waitForLog(page, "flybody attached", 120_000);
 
@@ -544,20 +545,47 @@ test.describe("webgpu-fly e2e", () => {
     await clickButton(page, "Use RL policy");
     await waitForLog(page, "trained walker loaded", 30_000);
 
+    // Put the body at spawn before handing over. The policy's synthetic
+    // reference trajectory is world-anchored — it marches from the spawn
+    // along +x with identity root quat — so the tracking error it sees on
+    // its first tick is however far the CPG has already carried and
+    // turned the fly. Without this reset the toggle is a coin flip:
+    // measured 3/6 runs walk (|action|mean 1.9) and 3/6 saturate
+    // (|action|mean ~150) and end on their back. That is a real defect in
+    // the handover, NOT one of the four fixes below, and this reset does
+    // not fix it — it only stops it from masking them here.
+    await page.evaluate(() => (window as unknown as { __physicsForTest?: { reset(): void } }).__physicsForTest?.reset());
     const before = await page.evaluate(() => {
-      const phys = (window as unknown as { __physicsForTest?: { data: { qpos: Float64Array } } }).__physicsForTest;
+      const phys = (window as unknown as { __physicsForTest?: { data: { qpos: Float64Array; time: number } } }).__physicsForTest;
       if (!phys) return null;
-      return { x: phys.data.qpos[0], y: phys.data.qpos[1], z: phys.data.qpos[2] };
+      return { x: phys.data.qpos[0], y: phys.data.qpos[1], z: phys.data.qpos[2], t: phys.data.time };
     });
+    expect(before, "physics handle missing").not.toBeNull();
 
-    await page.waitForTimeout(4_000);
+    // Window closed on the sim clock, not the wall clock, so the
+    // threshold below is cm per SIMULATED second — the portable
+    // quantity. Same pattern as the DN walking-command test above.
+    const SIM_WINDOW_S = 1.5;
+    await page.waitForFunction(
+      (w: { t0: number; dt: number }) => {
+        const phys = (window as unknown as { __physicsForTest?: { data: { time: number } } }).__physicsForTest;
+        return !!phys && phys.data.time - w.t0 >= w.dt;
+      },
+      { t0: before!.t, dt: SIM_WINDOW_S },
+      { timeout: 60_000 },
+    );
 
     const after = await page.evaluate(() => {
-      const phys = (window as unknown as { __physicsForTest?: { data: { qpos: Float64Array } } }).__physicsForTest;
+      const phys = (window as unknown as { __physicsForTest?: { data: { qpos: Float64Array; time: number } } }).__physicsForTest;
       const stats = (window as unknown as { __rlActionStats?: { absMax: number; absMean: number; count: number } }).__rlActionStats;
       if (!phys) return null;
+      const q = phys.data.qpos;
+      // Freejoint quaternion is (w,x,y,z) at qpos[3..6]; the world-z
+      // component of the body's own z-axis is 1 - 2*(x² + y²).
+      // +1 = upright, 0 = on its side, -1 = on its back.
       return {
-        x: phys.data.qpos[0], y: phys.data.qpos[1], z: phys.data.qpos[2],
+        x: q[0], y: q[1], z: q[2], t: phys.data.time,
+        upright: 1 - 2 * (q[4] * q[4] + q[5] * q[5]),
         actionStats: stats,
       };
     });
@@ -574,37 +602,44 @@ test.describe("webgpu-fly e2e", () => {
     const speed = parseFloat(m![1]);
     expect(Number.isFinite(speed), `body speed went non-finite: ${speed}`).toBe(true);
 
-    expect(before, "physics handle missing").not.toBeNull();
     expect(after, "physics handle missing").not.toBeNull();
     const dx = after!.x - before!.x;
     const dy = after!.y - before!.y;
     const dz = after!.z - before!.z;
-    console.log(`[rl-walker] before=(${before!.x.toFixed(3)},${before!.y.toFixed(3)},${before!.z.toFixed(3)}) after=(${after!.x.toFixed(3)},${after!.y.toFixed(3)},${after!.z.toFixed(3)}) dx=${dx.toFixed(3)} dy=${dy.toFixed(3)} dz=${dz.toFixed(3)}`);
+    const simDt = after!.t - before!.t;
+    const cmPerSimS = dx / simDt;
+    console.log(`[rl-walker] before=(${before!.x.toFixed(3)},${before!.y.toFixed(3)},${before!.z.toFixed(3)}) after=(${after!.x.toFixed(3)},${after!.y.toFixed(3)},${after!.z.toFixed(3)}) dx=${dx.toFixed(3)} dy=${dy.toFixed(3)} dz=${dz.toFixed(3)} over ${simDt.toFixed(2)} sim s = ${cmPerSimS.toFixed(3)} cm/sim s, upright=${after!.upright.toFixed(3)}`);
 
-    // This test gates what its name says — the policy runs and its
-    // actions reach the actuators — and deliberately does NOT assert
-    // forward progress, because the trained walker does not produce
-    // net forward locomotion in this port.
-    //
-    // It used to assert dx > 0.1, and passed. That was an artifact:
-    // science mode auto-ran a stim at boot which left fwdCmd saturated
-    // at ~1.0, the policy branch never calls driveLegs and nothing
-    // zeroed it, so the kinematic assist kept gliding the body forward
-    // while the policy was nominally in control. With the boot drive
-    // now returned to rest (src/main.ts), the assist is idle here and
-    // the honest number appears: dx = -1.174 cm over the same window.
-    // Under the assist the same window gives +1.227 cm, and the fly has
-    // been measured finishing it upside down. See LIMITATIONS.md §8.
-    //
-    // Re-adding a locomotion assertion here is only meaningful once the
-    // walker actually walks; until then it would encode the artifact.
+    // Forward progress is asserted on the signed x displacement, and
+    // applyTrainedWalkerActions zeroes the CPG command, so this is the
+    // policy walking and not the kinematic assist. It is the single
+    // gate on the four port fixes that turned this window around:
+    // world_zaxis reading xmat's column instead of its row (tilt sense
+    // inverted), a spawn height not offset for floor.xml's z=-0.15
+    // plane (episode began in free fall), reference-tracking obs that
+    // never read qpos (policy told its tracking error was always zero),
+    // and the missing joint_filter actuator dynamics (model.na = 0).
+    // Measured against a 2.0 cm/s command: 2.016-2.020 cm/sim s over 3
+    // runs, ending uprightness +0.997. Policy never enabled, assist off:
+    // 0.03 cm/sim s. 0.5 leaves ~4x margin below the pass case and ~15x
+    // above the fail case. |action|max is deliberately not gated: the
+    // stats also cover the pre-reset handover ticks, where it has been
+    // logged at 166 before settling into flybody's native ~6 band.
+    expect(cmPerSimS, `trained walker didn't walk forward (dx=${dx.toFixed(3)} cm in ${simDt.toFixed(2)} sim s)`)
+      .toBeGreaterThan(0.5);
+    // A fly on its back is not walking however far it slid — the
+    // pre-fix policy path was measured ending a window upside down
+    // (LIMITATIONS.md §8).
+    expect(after!.upright, `fly ended the window not upright (uprightness=${after!.upright.toFixed(3)})`)
+      .toBeGreaterThan(0.5);
+
     expect(after!.actionStats, "policy action stats missing").toBeTruthy();
     expect(after!.actionStats!.count, "policy never ticked — actions never reached the body")
       .toBeGreaterThan(0);
     expect(Number.isFinite(after!.actionStats!.absMax), "policy actions went non-finite").toBe(true);
     expect(after!.actionStats!.absMax, "policy emitted all-zero actions").toBeGreaterThan(0);
     // Body stays in the world: no NaN, no falling through the floor,
-    // no launching. Displacement direction is not asserted (see above).
+    // no launching.
     expect(Number.isFinite(dx) && Number.isFinite(dy) && Number.isFinite(dz),
       `body position went non-finite (dx=${dx}, dy=${dy}, dz=${dz})`).toBe(true);
     expect(Math.abs(dz), `body z drifted (dz=${dz.toFixed(3)} cm)`).toBeLessThan(1.0);
