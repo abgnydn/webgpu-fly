@@ -367,10 +367,27 @@ async function main() {
    */
   interface MancMotor {
     legs: Record<string, number>;          // T1_left … T3_right
+    muscles: Record<string, Record<string, number>>;      // leg → muscle → mean rate
+    antagonists: Record<string, Record<string, number>>;  // leg → joint → ext-vs-flex in [-1,1]
     wing: number;                           // mean wing motor rate
     neck: number;                           // mean neck motor rate
     abdomen: number;                        // mean abdomen motor rate
   }
+
+  const LEG_READOUT_ORDER = ["T1_left", "T1_right", "T2_left", "T2_right", "T3_left", "T3_right"];
+  // Antagonist muscle pairs, verified present in all six legs of
+  // vnc.meta.json's motor groups. `legs` above averages a leg's ~60 MNs
+  // into one number, which cancels every flexor against its extensor;
+  // these pools keep the opposition.
+  //
+  // tergotr (tergotrochanter) is deliberately absent from every pool:
+  // it is the escape-jump muscle driven by the giant fiber, not a
+  // walking muscle, so it must never enter a walking-related drive.
+  const ANTAGONISTS: Record<string, { ext: string[]; flex: string[] }> = {
+    tibia:      { ext: ["ti_extensor"], flex: ["ti_flexor", "acc_ti_flexor"] },
+    femur:      { ext: ["tr_extensor", "sternotrochanter"], flex: ["tr_flexor", "acc_tr_flexor"] },
+    coxa_twist: { ext: ["sternal_anterior_rotator"], flex: ["sternal_posterior_rotator"] },
+  };
 
   async function runRealSpine(brainRate: Float32Array): Promise<MancMotor | null> {
     if (!vncSim || !vncMeta) return null;
@@ -393,10 +410,39 @@ async function main() {
     const vncRate = await vncSim.captureRollingRate(20);
     // Aggregate motor neuron rates per leg+side.
     const legs: Record<string, number> = {};
+    const muscles: Record<string, Record<string, number>> = {};
+    const antagonists: Record<string, Record<string, number>> = {};
     for (const [legKey, group] of Object.entries(vncMeta.motor)) {
       let sum = 0;
       for (const i of group.all) sum += vncRate[i];
       legs[legKey] = group.all.length ? sum / group.all.length : 0;
+      // Pool mean, not mean-of-subclass-means: the pools are very
+      // unbalanced (T1 has 14–15 tibia flexor MNs against 2 extensors),
+      // so each side is divided by its own neuron count before the
+      // ratio, otherwise the difference just reports pool size.
+      const poolMean = (subs: string[]): number => {
+        let s = 0, n = 0;
+        for (const sub of subs) {
+          const idxs = group[sub];
+          if (!idxs) continue;
+          for (const i of idxs) s += vncRate[i];
+          n += idxs.length;
+        }
+        return n ? s / n : 0;
+      };
+      const perMuscle: Record<string, number> = {};
+      for (const sub of Object.keys(group)) {
+        if (sub === "all") continue;
+        perMuscle[sub] = poolMean([sub]);
+      }
+      muscles[legKey] = perMuscle;
+      const joints: Record<string, number> = {};
+      for (const [joint, pair] of Object.entries(ANTAGONISTS)) {
+        const aExt = poolMean(pair.ext);
+        const aFlex = poolMean(pair.flex);
+        joints[joint] = (aExt - aFlex) / (aExt + aFlex + 1e-9);
+      }
+      antagonists[legKey] = joints;
     }
     // Subclass aggregates (wm = wing, nm = neck, ad = abdomen).
     const aggSub = (key: string): number => {
@@ -408,6 +454,8 @@ async function main() {
     };
     return {
       legs,
+      muscles,
+      antagonists,
       wing: aggSub("wm"),
       neck: aggSub("nm"),
       abdomen: aggSub("ad"),
@@ -417,6 +465,13 @@ async function main() {
   let driveFwd = 0, driveTurn = 0; // smoothed
   let lastSpineMode = "synthetic"; // tracked for the diagnostic readout
   let lastMancActivity = { legs: 0, wing: 0, neck: 0, abdomen: 0 };
+  // Muscle-resolved readout. Instrumentation only — nothing downstream
+  // consumes it yet; driveLegs still runs off fwd/turn.
+  const mancMuscleProbe: {
+    muscles: Record<string, Record<string, number>>;
+    antagonists: Record<string, Record<string, number>>;
+  } = { muscles: {}, antagonists: {} };
+  (window as unknown as { __mancMuscles: typeof mancMuscleProbe }).__mancMuscles = mancMuscleProbe;
   // Build VNC stand-in context once; reused by every drive update.
   const vncCtx: MotorContext = {
     famousDns,
@@ -452,6 +507,8 @@ async function main() {
       mancTotal = meanL + meanR;
       mancAsym = meanR - meanL;
       lastMancActivity = { legs: mancTotal, wing: realMotor.wing, neck: realMotor.neck, abdomen: realMotor.abdomen };
+      mancMuscleProbe.muscles = realMotor.muscles;
+      mancMuscleProbe.antagonists = realMotor.antagonists;
     }
     const visualActive = visual && Number.isFinite(visual.angle) && visual.area > 0;
     if (visualActive) {
@@ -742,6 +799,7 @@ async function main() {
       const n = Math.max(0, Math.min(w, Math.round(r * w * 3)));
       return "█".repeat(n) + "·".repeat(w - n);
     };
+    const signed = (v: number) => (v >= 0 ? "+" : "") + v.toFixed(2);
     const lines = [
       `fwd ${driveFwd.toFixed(2)}  turn ${driveTurn.toFixed(2)}  speed ${sp.toFixed(2)} cm/s  <span style="opacity:0.5">[${lastSpineMode}]</span>`,
       `<span style="opacity:0.7">synth: fwd ${bar(vnc.fwdRate)}  bwd ${bar(vnc.bwdRate)}  esc ${bar(vnc.escape)}</span>`,
@@ -749,6 +807,23 @@ async function main() {
     if (vncMeta) {
       const m = lastMancActivity;
       lines.push(`<span style="opacity:0.7">MANC : leg ${bar(m.legs)}  wing ${bar(m.wing)}  abd ${bar(m.abdomen)}</span>`);
+      const ant = mancMuscleProbe.antagonists;
+      // A ratio of 0 is ambiguous — balanced pools and two silent pools
+      // both give 0 — so silence prints as a dash instead of "+0.00".
+      const silent = (leg: string) => {
+        const mus = mancMuscleProbe.muscles[leg] ?? {};
+        return [...ANTAGONISTS.tibia.ext, ...ANTAGONISTS.tibia.flex]
+          .every((sub) => (mus[sub] ?? 0) <= 0);
+      };
+      const cells = LEG_READOUT_ORDER
+        .filter((k) => k in ant)
+        .map((k) => {
+          const lbl = k.replace("_left", "L").replace("_right", "R");
+          return `${lbl} ${silent(k) ? "  —  " : signed(ant[k].tibia)}`;
+        });
+      if (cells.length) {
+        lines.push(`<span style="opacity:0.7">MANC ti ext−flex: ${cells.join("  ")}</span>`);
+      }
     }
     driveReadout.innerHTML = lines.join("<br>");
   }, 50);
