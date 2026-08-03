@@ -12,7 +12,7 @@ import type {
   MainModule, MjModel, MjData,
   MjvScene, MjvOption, MjvPerturb, MjvCamera,
 } from "@mujoco/mujoco";
-import { getOrFetch } from "./cache";
+import { getOrFetch, progressText } from "./cache";
 
 /** Number of actuators that {@link patchActuatorFilters} gives an
  * activation state — 70 `general` + 8 `adhesion` in fruitfly.xml. */
@@ -108,7 +108,9 @@ export class Physics {
 
     onProgress?.("fetching flybody bundle (140 MB, one IDB transaction)");
     const t0 = performance.now();
-    const bundle = await getOrFetch(bundleUrl, bundleUrl);
+    const bundle = await getOrFetch(bundleUrl, bundleUrl, (got, total) => {
+      onProgress?.(`fetching flybody bundle — ${progressText(got, total)}`);
+    });
     onProgress?.(`bundle fetched in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
 
     // Parse bundle: tiny header + manifest, then names + data sections.

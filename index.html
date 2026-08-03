@@ -38,7 +38,7 @@
         var q = window.location.search || "";
         var go =
           /^#?r=/.test(h) ||
-          /[?&]mode=science\b/.test(q) ||
+          /[?&]mode=(science|game)\b/.test(q) ||
           /[?&](play|app)\b/.test(q);
         if (go) window.location.replace("app.html" + q + h);
       })();

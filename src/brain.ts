@@ -33,13 +33,16 @@ export interface Brain {
   weight: Float32Array;     // length E
 }
 
-export async function loadBrain(url: string = "/brain.bin"): Promise<Brain> {
+export async function loadBrain(
+  url: string = "/brain.bin",
+  onProgress?: (got: number, total: number) => void,
+): Promise<Brain> {
   // Route through IDB cache so reloads in the same browser session
   // skip the ~125 MB network fetch (~30s on the dev server). Cache
   // key is the full URL including ?v=<sha> from assets.json, so a
   // new build naturally invalidates the cache (different URL = new
   // entry), and idbPut deletes the previous generation of the same asset.
-  const buf = await getOrFetch(url, url);
+  const buf = await getOrFetch(url, url, onProgress);
   return parseBrain(buf);
 }
 

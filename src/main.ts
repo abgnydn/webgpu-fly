@@ -10,6 +10,7 @@ import { GaitEvolver } from "./evolution";
 import { loadWalkingPolicy, loadWalkingObsNorm, type WalkingPolicy, type ObsNormStats } from "./walking-policy";
 import { loadWalkingRef } from "./walking-ref";
 import { loadManifest, type VersionFor } from "./manifest";
+import { progressText } from "./cache";
 import { Game, type DnEntry } from "./game";
 
 // ?mode=game (default) shows the playable HUD; ?mode=science keeps the
@@ -137,15 +138,53 @@ function bootSkip(name: "brain" | "vnc" | "body", detail: string) {
 }
 // Surface a fatal boot error on the overlay itself — in game mode the log
 // pane is hidden, so log() alone leaves the overlay spinning forever.
-function bootFail(msg: string) {
+function bootFail(msg: string, link?: { href: string; text: string }) {
   const el = document.querySelector<HTMLElement>("#boot .blink");
   if (!el) return;              // overlay already dismissed/removed
   el.textContent = msg;
   el.style.color = "#ff6b6b";
   el.style.animation = "none";
+  if (link) {
+    const a = document.createElement("a");
+    a.href = link.href;
+    a.textContent = link.text;
+    a.style.cssText = "display: block; margin-top: 10px; color: #9ad7ff";
+    el.appendChild(a);
+  }
 }
 
 async function main() {
+  // Bail before the ~300 MB of binaries, not after: a Safari/Firefox
+  // visitor used to sit through the whole connectome download only to be
+  // told their browser can't run it.
+  if (!("gpu" in navigator)) {
+    log("navigator.gpu missing — needs Chrome, Edge, or Safari 26+", "err");
+    bootFail(
+      "WebGPU unavailable in this browser — the simulator needs Chrome, Edge, or Safari 26+ (Firefox: Windows only, 141+).",
+      // Relative, not root-absolute: the site may be served under a
+      // subpath (Hugging Face Space), where "/index.html" 404s.
+      { href: "index.html", text: "→ read what this project is (no WebGPU needed)" },
+    );
+    return;
+  }
+
+  // Embedded (e.g. the Hugging Face Space page frames the app): storage is
+  // partitioned per-embedder and may be blocked outright, so the ~300 MB
+  // IndexedDB cache can silently fail to persist between visits. Point at
+  // the top-level origin, where it survives.
+  if (window.self !== window.top) {
+    const hint = document.querySelector<HTMLElement>("#boot .blink");
+    if (hint) {
+      const a = document.createElement("a");
+      a.href = window.location.href;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.textContent = "↗ open in its own tab so the download is cached";
+      a.style.cssText = "display: block; margin-top: 8px; color: #9ad7ff; font-size: 12px";
+      hint.appendChild(a);
+    }
+  }
+
   // Cache-bust manifest. Maps asset filename → "?v=<12-char sha>" so the
   // browser cache key is unique per build. Combined with `Cache-Control:
   // immutable` on R2, subsequent loads hit the browser cache and skip
@@ -169,7 +208,9 @@ async function main() {
   bootStage("brain", "run", "fetching connectome (120 MB)…");
   let brain: Brain;
   try {
-    brain = await loadBrain(brainUrl + versionFor("brain.bin"));
+    brain = await loadBrain(brainUrl + versionFor("brain.bin"), (got, total) => {
+      bootStage("brain", "run", `fetching connectome — ${progressText(got, total)}`);
+    });
   } catch (e) {
     log(`failed: ${(e as Error).message}`, "err");
     log("did you run `npm run data && npm run convert`?", "warn");
@@ -255,7 +296,9 @@ async function main() {
     physicsReject = rej;
   });
   Physics.create((msg) => {
-    log(`flybody: ${msg}`);
+    // Per-megabyte bundle progress belongs on the boot overlay only —
+    // logging it too appends ~140 lines and buries the real trace.
+    if (!msg.startsWith("fetching flybody bundle —")) log(`flybody: ${msg}`);
     bootStage("body", "run", msg);
   })
     .then(async (p) => {
@@ -560,11 +603,6 @@ async function main() {
     driveReadout.textContent = `fwd ${driveFwd.toFixed(2)}  turn ${driveTurn.toFixed(2)}`;
   }
 
-  if (!("gpu" in navigator)) {
-    log("navigator.gpu missing — open in Chrome / Edge", "err");
-    bootFail("WebGPU unavailable — open in Chrome or Edge");
-    return;
-  }
   const sim = await FlySim.create(brain, { ...DEFAULT_PARAMS });
   log(`FlySim ready. dt=${sim.params.dtMs} ms  tau=${sim.params.tauMs} ms`);
 
@@ -588,7 +626,9 @@ async function main() {
   const vncMetaUrl = import.meta.env.VITE_VNC_META_URL || "/vnc.meta.json";
   bootStage("vnc", "run", "fetching MANC connectome (43 MB)…");
   try {
-    const vncBrain = await loadBrain(vncUrl + versionFor("vnc.bin"));
+    const vncBrain = await loadBrain(vncUrl + versionFor("vnc.bin"), (got, total) => {
+      bootStage("vnc", "run", `fetching MANC connectome — ${progressText(got, total)}`);
+    });
     const vncMetaResp = await fetch(vncMetaUrl + versionFor("vnc.meta.json"));
     vncMeta = await vncMetaResp.json();
     vncSim = await FlySim.create(vncBrain, { ...DEFAULT_PARAMS });
