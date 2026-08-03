@@ -11,7 +11,7 @@
     <meta property="og:title" content="webgpu-fly — a real fly brain you can play" />
     <meta
       property="og:description"
-      content="A real fruit-fly brain, spine, and body running live in a browser tab. Press a key, fire real neurons, watch the fly walk. No install."
+      content="A real fruit-fly brain, spine, and body running live in a browser tab. Press a key, fire real neurons, and the cascade decides where the fly goes. The connectome simulation is real; the walking on top of it is an approximation we document. No install."
     />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="author" content="Ahmet Barış Günaydın" />
@@ -445,6 +445,15 @@
           the connectome is a walking speed and a turn — the stepping rhythm
           itself is a hand-written tripod gait, not neuron-by-neuron muscle
           control.
+        </p>
+        <p class="body reveal">
+          And in this default view the body is <em>moved</em> by that speed and
+          turn directly, rather than being pushed along by its own legs. So the
+          brain really does decide where the fly goes; the legs you see stepping
+          are not what carries it there. There is a switch that turns the
+          shortcut off — with it off, the connectome-driven fly pivots on the
+          spot and covers almost no ground. The one thing that does walk on its
+          legs is the trained policy below, and even that leans on a stabiliser.
         </p>
       </section>
 
