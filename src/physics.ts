@@ -616,6 +616,14 @@ export class Physics {
    * path is the drive scalar, not locomotion. */
   static kinematicAssistEnabled = true;
 
+  /** Pitch/roll angular-velocity damper applied every substep before
+   * mj_step (x0.85, i.e. x0.039 over a 20-substep control tick). It is a
+   * separate intervention from the kinematic assist and, unlike it, has
+   * been on unconditionally for the project's whole life — so no
+   * uprightness number recorded before this flag existed is damper-free.
+   * Exposed so that can be measured rather than assumed. */
+  static attitudeDamperEnabled = true;
+
   /** Step physics N times.
    *
    * Leg and wing actuators, contacts and ground reaction are real
@@ -627,9 +635,9 @@ export class Physics {
    *    a 32-substep render frame). This is NOT gated by
    *    kinematicAssistEnabled: it runs in honest mode and under the
    *    trained policy. Leg and gravity torques about those two axes are
-   *    largely absorbed instead of integrated. It has never been run in
-   *    the off state, so the undamped baseline is unmeasured — do not
-   *    assume the fly stands up without it.
+   *    largely absorbed instead of integrated. Measured through
+   *    attitudeDamperEnabled: off, the trained policy goes from 2.019
+   *    to 0.068 cm/sim s and from +0.997 uprightness to -0.87.
    *
    * 2. Kinematic assist — when kinematicAssistEnabled and a drive
    *    command is set, translation (qvel[0], qvel[1]) and yaw (qvel[5])
@@ -652,7 +660,7 @@ export class Physics {
     for (let s = 0; s < substeps; s++) {
       const qpos = this.data.qpos as Float64Array;
       const qvel = this.data.qvel as Float64Array;
-      if (qvel && qvel.length >= 6) {
+      if (Physics.attitudeDamperEnabled && qvel && qvel.length >= 6) {
         qvel[3] *= 0.85;   // pitch damping
         qvel[4] *= 0.85;   // roll damping
       }

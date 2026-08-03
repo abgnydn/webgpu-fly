@@ -51,7 +51,7 @@ approximation, and every approximation and shortcut is inventoried in
 
 - **Not a scientific simulator replacement.** NEST / Brian2 / NEURON are faster, biophysically detailed, and validated. For real fly-brain dynamics research, use those.
 - **Not biophysically detailed.** Neurons are LIF with a two-state alpha synapse — no ion channels, dendritic compartments, or neuromodulation.
-- **Not quantitatively validated** whole-brain. The dynamics check is qualitative (Kenyon-cell sparsity matches Shiu et al. 2024), not a cell-type-resolved rate match.
+- **Not quantitatively validated** whole-brain. The one dynamics check is Kenyon-cell sparsity in the canonical 5–15% band — and `w_syn` was tuned to land it there (`src/sim.ts:25-30`), so it is a calibration target, not an independent validation of Shiu et al. 2024.
 - **Not faster than the reference.** It runs *slower* than real time. The win is reachability, not throughput. See [`LIMITATIONS.md`](./LIMITATIONS.md).
 
 </td>
@@ -107,7 +107,7 @@ mode, ARS evolver, raw spike-rate log.
 | **Spine** | [Janelia MANC](https://www.janelia.org/project-team/flyem/manc-connectome) connectome (Takemura et al. 2024) | 23,188 VNC neurons, 5.2M edges, second WebGPU LIF instance |
 | **Body** | [TuragaLab/flybody](https://github.com/TuragaLab/flybody) MJCF (Vaxenburg et al. 2025, *Nature*) | 67 bodies, 111 actuators, real physics in MuJoCo/WASM |
 | **Eyes** | offscreen render-to-texture from fly head pose | 64×16 retinal sample fed to brain optic neurons |
-| **Walker** | trained RL policy ([Vaxenburg et al. 2025 Figshare](https://janelia.figshare.com/articles/dataset/25309105)) | LayerNormMLP, 741-dim obs → 59 actions, pure-TS forward pass. Walks the body under physics with the kinematic assist **off** — 2.004–2.021 cm per simulated second against a 2.0 cm/s command, upright +0.997, no capsize in 3/3 reps. Checked element-wise against a numpy re-run of the same extracted weights (`tools/verify_walking_policy.py`) — that validates the port's arithmetic, not the assumed architecture against the original SavedModel |
+| **Walker** | trained RL policy ([Vaxenburg et al. 2025 Figshare](https://janelia.figshare.com/articles/dataset/25309105)) | LayerNormMLP, 741-dim obs → 59 actions, pure-TS forward pass. Translates the body under physics with the kinematic assist **off** — 2.004–2.021 cm per simulated second against a 2.0 cm/s command. It stays upright (+0.997) only with the pitch/roll damper on; with the damper off it capsizes and covers 0.068 cm/sim s. Checked element-wise against a numpy re-run of the same extracted weights (`tools/verify_walking_policy.py`) — that validates the port's arithmetic, not the assumed architecture against the original SavedModel |
 
 Brain → spine wiring is by **cell-type name match** (`DNa01` in the brain is the
 same neuron as `DNa01` in the VNC — brain side has the soma, VNC side the axon).
@@ -123,14 +123,20 @@ the leg phase itself is `sin(sim_time · freq)`. (Caveat: it's a name join acros
 connectomes, not a reconstructed synaptic bridge — see
 [`LIMITATIONS.md`](./LIMITATIONS.md) §5.)
 
-The **trained RL walking policy** is a separate path, and it does walk the body
-from leg actuation and ground reaction alone: with the kinematic assist off it
-covers 2.004–2.021 cm per simulated second against a 2.0 cm/s command and stays
-upright (+0.997, no capsize in 3/3 reps), while a run with the policy never
-enabled travels 0.032 cm/sim s. That path bypasses the brain and the spine
-entirely — it is Vaxenburg et al.'s published policy walking the fly, not the
-connectome. [`LIMITATIONS.md`](./LIMITATIONS.md) §4.1 has the numbers and the
-four port defects that had to be fixed to get there.
+The **trained RL walking policy** is a separate path, and its *translation* is
+earned: with the kinematic assist off nothing on that path writes the body's
+translational velocity, so the 2.004–2.021 cm per simulated second it covers
+against a 2.0 cm/s command comes from leg actuation and ground reaction, while a
+run with the policy never enabled travels 0.032 cm/sim s. Its *attitude* is not
+earned. A pitch/roll damper that sits outside the assist multiplies the body's
+pitch and roll angular velocity by 0.85 every substep (`src/physics.ts:663-666`,
+×0.039 per control tick); with that damper off the same policy capsizes and
+covers 0.068 cm/sim s. So the +0.997 uprightness is the damper's doing, not the
+policy's.
+That path also bypasses the brain and the spine entirely — it is Vaxenburg et
+al.'s published policy walking the fly, not the connectome.
+[`LIMITATIONS.md`](./LIMITATIONS.md) §4.1 has the damper A/B, the numbers, and
+the four port defects that had to be fixed to get there.
 
 ---
 

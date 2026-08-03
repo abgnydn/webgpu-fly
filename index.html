@@ -471,21 +471,34 @@
           </div>
         </div>
         <p class="body reveal" style="margin-top:24px">
-          The brain and spine are joined the way real biology does it: a command
-          neuron named <code>DNa01</code> in the brain is the same cell as
-          <code>DNa01</code> in the spinal cord. Nothing in that path is learned
-          or scripted — it is wire for wire from the real animal. Past the
-          spinal cord it changes: the motor neurons set a walking speed and a
-          turn, and a hand-written leg rhythm does the actual stepping.
+          The brain and the spine are joined by <i>name</i>, not by wire: a
+          command neuron called <code>DNa01</code> in the brain is matched to the
+          neuron with the same name in the spinal cord. Biology motivates the
+          match — that cell really does keep its body in the brain and send its
+          axon down the cord — but the two maps come from two different flies (a
+          female brain, a male nerve cord), and no reconstructed connection
+          crosses between them. What crosses is a number: the brain neuron's
+          recent firing rate, averaged over its left and right copies and scaled
+          by a constant we picked, dropped into the spinal neurons that share its
+          name. The spiking on either side is real; the handoff is ours. Past the
+          spinal cord it changes again: the motor neurons set a walking speed and
+          a turn, the choice of forward or backward comes from a small hand-wired
+          spine rather than from the real one, and a hand-written leg rhythm does
+          the actual stepping.
         </p>
         <p class="body reveal">
           There is also a second mode that hands the legs to a
-          <b>trained walking policy</b> published with the body model. That one
-          really does walk the fly on its own legs, at the speed you ask it
-          for, with the push we normally give the body switched off. It is
-          worth being clear about what it is: a neural network someone trained
-          with reinforcement learning, not the fly's own brain — the connectome
-          plays no part in it.
+          <b>trained walking policy</b> published with the body model. With the
+          push we normally give the body switched off, the forward motion is
+          genuinely the legs' doing — the fly covers 2.019 cm per simulated
+          second against a 2.0 cm/s command, pushing off the ground. Staying
+          upright is not: a stabiliser bleeds off the fly's pitch and roll on
+          every physics substep, and with that switched off too it topples over
+          and gets nowhere (0.068 cm per simulated second). The forward motion
+          is earned; the balance is propped up. It is also worth being clear
+          about what the policy is: a neural network someone trained with
+          reinforcement learning, not the fly's own brain — the connectome plays
+          no part in it.
         </p>
       </section>
 
