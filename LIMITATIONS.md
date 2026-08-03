@@ -15,9 +15,10 @@ the fly.** Roughly 20.3M connectome edges reach the body as about one scalar
 magnitude plus a turn bias per tick, and those two numbers scale a hand-written
 `sin(t × 10 Hz)` tripod. §8 is the complete shortcut inventory, with measured
 numbers for what the body does once the assist is off. A *published RL policy*
-(Vaxenburg et al. 2025) does walk the body under physics with the assist off
-(§4.1) — that policy bypasses the brain and the spine entirely, so it is not
-the fly's own brain doing the walking either.
+(Vaxenburg et al. 2025) does translate the body under physics with the assist
+off (§4.1), though it stays upright only because a pitch/roll damper outside
+the assist holds it there — and that policy bypasses the brain and the spine
+entirely, so it is not the fly's own brain doing the walking either.
 
 ---
 
@@ -56,31 +57,69 @@ the fly's own brain doing the walking either.
   simply out of scope for v1. Changing the confidence threshold requires
   rebuilding `brain.bin`.
 
-## 3. Dynamics validation is qualitative, not quantitative
+## 3. Dynamics validation is qualitative — and calibrated, not independent
 
 - We check the **shape** of the dynamics: no-input networks go silent (no
-  runaway), Kenyon cells fire sparsely (~5–15%) under sensory drive,
-  consistent with Shiu et al. 2024.
+  runaway), Kenyon cells fire sparsely (~5–15%) under sensory drive.
+- **`w_syn` is not taken from Shiu et al. — it is fitted to the number we then
+  report.** Our own source names their free parameter as 0.275 mV per synapse
+  (`src/sim.ts:16`); we ship 0.005 (`src/sim.ts:39`), and the comment above it
+  says why in as many words (`src/sim.ts:25-30`):
+
+  > w_syn is tuned EMPIRICALLY (not from peak-matching) to land KC at the
+  > canonical 5-15% on Mixed sensory. Alpha synapse integrates each spike
+  > over ~5ms so the cascade amplifies non-linearly vs old single-step
+  > direct injection — peak-matching gives way too hot a brain (73% KC).
+  > 0.005 keeps the dataset's natural cascade strength visible without
+  > runaway.
+
+  So KC sparsity is a **calibration target, not an independent validation**:
+  the single free synaptic weight was tuned until the sparsity landed in the
+  canonical band, and that agreement is then reported as a result. What the
+  check actually shows is that a `w_syn` exists which puts this network in a
+  plausible regime — sparse rather than silent or saturated — not that the
+  network reproduces Shiu et al.'s dynamics. **The sparsity number is not
+  independent evidence.**
 - We have **not** done a quantitative, cell-type-resolved firing-rate match
-  against a published reference simulation across the whole brain. The
-  sparsity check is the strongest dynamics claim we stand behind.
+  against a published reference simulation across the whole brain. With
+  `w_syn` fitted to the sparsity band, there is no check here that is both
+  quantitative and independent of that fit.
 
 ## 4. The brain → spine → body path has documented approximations
 
 These are the "honest gaps" from the README, restated as limitations. §8 is
 the complete list; these four are the ones with the longest history.
 
-1. **Trained RL walker walks — after four port fixes.** With the kinematic
-   assist explicitly off, the policy drives the body from actuator → ground
-   reaction alone: **2.004–2.021 cm per simulated second** against a 2.0 cm/s
-   command, 5.03–5.08 cm of travel per window, uprightness **+0.997** at the
-   end of the window, and **no capsize in 3 of 3 reps**, with |action| max
-   ≈ 5.9 while upright — inside flybody's native band (~6). Control condition,
+1. **Trained RL walker translates — after four port fixes, and only with the
+   attitude damper on.** With the kinematic assist explicitly off and the
+   damper in its shipped on state, nothing on this path writes the body's
+   translational velocity (`qvel[0..2]`), so the forward motion is genuinely
+   actuator → ground reaction: **2.004–2.021 cm per simulated second** against
+   a 2.0 cm/s command, 5.03–5.08 cm of travel per window, uprightness
+   **+0.997** at the end of the window, and **no capsize in 3 of 3 reps**, with
+   |action| max ≈ 5.9 while upright — inside flybody's native band (~6). Control condition,
    policy never enabled and assist still off: 0.032 cm/sim s, uprightness
-   0.999 — the fly just stands there, so the locomotion comes from the policy
+   0.999 — the fly just stands there, so the translation comes from the policy
    and not from anything else. In the e2e suite (assist at its default) the
    walker's displacement is dx = +1.642 cm, previously −1.174 cm. Reproduce
-   with `.walkbench.mjs`.
+   with `tools/walkbench.mjs`.
+
+   **The uprightness is not the policy's.** The pitch/roll damper (§8) is a
+   separate intervention that is not gated by the assist, and it is what keeps
+   this path on its feet. Measured A/B, trained policy, assist off, 3 reps
+   each:
+
+   | Pitch/roll damper | cm/sim s | Uprightness at end | Min uprightness |
+   |---|---|---|---|
+   | **ON** (as shipped) | 2.019 | **+0.997** | +0.997 |
+   | **OFF** | 0.068 | **−0.87** | −0.913 |
+
+   Commanded speed is 2.0 cm/s in both. With the damper off the fly capsizes
+   and stops walking — 0.068 cm/sim s is closer to the 0.032 cm/sim s of a
+   body with no controller at all (damper on) than to the commanded 2.0. So
+   the split is: **translation is earned, attitude is not.** A sentence of the
+   form "walks from leg actuation and ground reaction alone" is false about
+   this path; the honest version keeps the two halves apart.
 
    Until today this item read "does not walk", and it was accurate: with the
    assist off the fly capsized within ~1.5 s and stayed on its back
@@ -107,9 +146,9 @@ the complete list; these four are the ones with the longest history.
      59-dim `actuator_activation` observation real instead of all zeros and
      softens the plant ~5.5× per control tick.
 
-   **What this does not change:** the pitch/roll damper (§8) is not gated by
-   the assist and runs on this path too, so the uprightness numbers above are
-   not a damper-free result; the forward pass has still never been compared
+   **What this does not change:** the uprightness numbers above are not a
+   damper-free result, and the A/B says what the damper-free result is; the
+   forward pass has still never been compared
    against the published SavedModel (see the end of §8); and this is still not
    the connectome walking the fly — it is a published RL policy on a path that
    bypasses the brain and the spine.
@@ -142,7 +181,7 @@ the complete list; these four are the ones with the longest history.
    synthetic, not a training clip. Real fly mocap from the Vaxenburg deposit
    is wired in as opt-in (`__walkingRefFromMocap`), and that branch is **not**
    fixed: it is baked at 50 Hz (`tools/bake_walking_ref.py:46`) and replayed
-   one frame per 2 ms control tick (`src/physics.ts:971`), a 10× rate error,
+   one frame per 2 ms control tick (`src/physics.ts:978`), a 10× rate error,
    and the 65-frame lookahead exceeds the 57-frame trajectory so the window
    wraps mid-observation. Measured before the item-1 fixes: enabling it takes
    |action| max from ~7 to 3097–3250 and the fly spins 944–1051° in ~1.8
@@ -180,15 +219,18 @@ the complete list; these four are the ones with the longest history.
 
 ## 8. Full shortcut inventory — what actually moves the body
 
-The "Honest mode" button flips exactly three flags (`src/main.ts:669-683`).
-The table below has thirteen rows, and nine of them are behind no toggle at
-all. This section is all of them — the ones the button covers and the ones it
-does not — so the button is not the only place they are disclosed.
+The "Honest mode" button flips exactly three flags (`src/main.ts:772-774`).
+The table below has fourteen rows, and ten of them are marked **no** — outside
+the button entirely. This section is all of them — the ones the button covers
+and the ones it does not — so the button is not the only place they are
+disclosed.
 
-Nothing here is a claim about the neural simulation. The FlyWire and MANC
-connectomes are real, both LIF networks genuinely run on the GPU, and the
-stimulus→cascade dynamics are connectome-derived. What follows is about how
-the *body* is driven, which is a different and much weaker story.
+Almost nothing here is a claim about the neural simulation. The FlyWire and
+MANC connectomes are real, both LIF networks genuinely run on the GPU, and the
+stimulus→cascade dynamics are connectome-derived. What follows is mostly about
+how the *body* is driven, which is a different and much weaker story — one
+exception is the deafferentation row, which is about what the cord is never
+told.
 
 ### The information bottleneck
 
@@ -204,7 +246,7 @@ MANC       23,188 neurons /  5,243,574 edges
    ↓  and the direction sign is discarded — it comes from the
       hand-wired 200-neuron synthetic spine                      main.ts:470
    ↓  driveLegs(walk, turn)                                      room.ts:640
-   =  sin(t · 10 Hz), 18 of 48 leg actuators                     physics.ts:663-719
+   =  sin(t · 10 Hz), 18 of 48 leg actuators                     physics.ts:734-790
 ```
 
 **Roughly 20.3 million connectome edges reach the body as about one scalar
@@ -220,17 +262,31 @@ geometry (`src/vnc.ts:369-384`).
 |---|---|---|---|
 | **Kinematic assist** — writes freejoint `qvel[0]`, `qvel[1]`, `qvel[5]` from `fwdCmd`/`turnCmd`, re-asserted every substep before `mj_step`. Still what moves the body on the **CPG path**; the trained-policy path no longer needs it (§4.1) | ground reaction from leg contact | **yes** (`Physics.kinematicAssistEnabled`) | `src/physics.ts` `step()`, default on at `Physics.kinematicAssistEnabled` |
 | **Stale CPG command under the policy — resolved** — `fwdCmd`/`turnCmd` are written only by `driveLegs` and the policy path skips `driveLegs`; nothing used to zero them, so the last CPG command kept driving the body throughout "trained walking". The policy path now clears the stale command on takeover | — | n/a — no longer a live shortcut | `src/physics.ts`, `src/room.ts:633-647` |
-| **Pitch/roll attitude damper** — `qvel[3] *= 0.85; qvel[4] *= 0.85` per substep, ×0.039 per 2 ms control tick | balance, and the body's ability to tip at all | **no** — it sits before and outside the assist guard | `src/physics.ts:656-659` |
+| **Pitch/roll attitude damper** — `qvel[3] *= 0.85; qvel[4] *= 0.85` per substep, ×0.039 per 2 ms control tick. It is what keeps the trained policy upright: damper off, the policy capsizes and drops from 2.019 to 0.068 cm/sim s (§4.1) | balance, and the body's ability to tip at all | **no** — it sits before and outside the assist guard, and the button does not flip it. It is now gated by its own flag (`Physics.attitudeDamperEnabled`, default on) so it can be measured | `src/physics.ts:625`, `:663-666` |
 | **Boot stimulus drives itself** — science mode auto-runs `STIMULI[0]` at load, saturating the spine to `fwdCmd = 0.99999` for the length of its window; the drive is put back to rest when that window ends, so the residual no longer survives to the first user click. `decayDrive()` is defined and never called (one grep hit, the definition) | a brain whose drive responds to what you click | **no** | `src/main.ts:1284-1288`, `src/main.ts:499` |
-| **Tripod CPG is the source of leg timing** — `phase = data.time · 10 Hz`, hard-coded gait constants, 3 of 8 DOFs driven per leg | motor-neuron output setting stance/swing | **no** | `src/physics.ts:718-725`, `:727-783`, actuator cache `:277-284` |
+| **The cord is deafferented** — every one of MANC's 6,282 sensory neurons receives zero input. The only drive written into the VNC is the 7 DN types' brain rate; the rest of the `ext` vector stays zero (`src/main.ts:438-452`), and the offline rhythm script drives it the same way (`tools/vnc_rhythm.py:436-437`). Count from `public/vnc.meta.json` (`cell_classes.sensory`) | load, campaniform, hair-plate and chordotonal feedback — which is load-bearing for real insect leg coordination | **no** | `src/main.ts:438-452`, `tools/vnc_rhythm.py:436-437` |
+| **Tripod CPG is the source of leg timing** — `phase = data.time · 10 Hz`, hard-coded gait constants, 3 of 8 DOFs driven per leg | motor-neuron output setting stance/swing | **no** | `src/physics.ts:725-732`, `:734-790`, actuator cache `:277-284` |
 | **Wing motion is hand-written** — 218 Hz analytic stroke, amplitude hard-capped at ×0.2 of flybody's canonical pattern because anything above ~0.25 launches the freejoint body | wing motor neurons (MANC's 66 are read for the readout only) | **no** | `src/physics.ts:558-582`, cap at `:568` |
-| **`jumpImpulse` writes `qvel[2]` directly** | leg extension producing a takeoff | **no** | `src/physics.ts:1063-1065`, called from `src/main.ts:495` |
-| **Adhesion clamped to 1.0** at init and whenever walk drive < 0.01 — a standing fly is glued to the floor | claw contact and friction holding a stationary fly | **no** | `src/physics.ts:285-291`, `:773-776` |
+| **`jumpImpulse` writes `qvel[2]` directly** | leg extension producing a takeoff | **no** | `src/physics.ts:1074-1076`, called from `src/main.ts:495` |
+| **Adhesion clamped to 1.0** at init and whenever walk drive < 0.01 — a standing fly is glued to the floor | claw contact and friction holding a stationary fly | **no** | `src/physics.ts:287-293`, `:780-783` |
 | **Visual-reflex angle bypass** — `turn ∝ retinal angle`, forward speed from retinal area | the brain's optic→DN contralateral cascade | **yes**, but the brain path falls back to the identical law when cascade asymmetry < 0.05, and the code records the cascade's sign as empirically **wrong** for tracking | `src/vnc.ts:369-378`; brain path `:352-368`; sign note `:322-326` |
 | **Sweep-mode spine bypass** — target lost for 4+ ticks writes a scripted alternating scan turn straight to the body | search behaviour emerging from the brain | **no** | `src/main.ts:998-1005` |
-| **Walking reference** — synthetic world-space trajectory by default, now closed-loop against the live body pose (§4.1), but still synthetic rather than a training clip; the mocap opt-in is **still** baked at 50 Hz and replayed at 500 Hz, and the 65-frame lookahead still exceeds the 57-frame clip | the policy's training reference clip | switches to mocap, which measures **worse** (§4.4) | `src/physics.ts:974-1000`, `:971`; `tools/bake_walking_ref.py:46` |
+| **Walking reference** — synthetic world-space trajectory by default, now closed-loop against the live body pose (§4.1), but still synthetic rather than a training clip; the mocap opt-in is **still** baked at 50 Hz and replayed at 500 Hz, and the 65-frame lookahead still exceeds the 57-frame clip | the policy's training reference clip | switches to mocap, which measures **worse** (§4.4) | `src/physics.ts:981-1008`, `:978`; `tools/bake_walking_ref.py:46` |
 | **"Evolve gait (WebGPU ARS)" does not evolve against MuJoCo** — the fitness is a 1-D point-mass rollout with analytic thrust and quadratic drag: no gravity, no ground contact, no body — and the winner is written into the live physics body | optimizing the gait against the actual simulated fly | **no** | `src/shaders/evolve.wgsl:4-6`, `:101-104`; applied at `src/main.ts:1054-1056` |
-| **The speed readout displays the assist** — `bodySpeed` reads `qvel[0..1]`, the exact slots the assist writes immediately before `mj_step` | measured locomotion | **no** | `src/physics.ts:1069-1073`, rendered at `src/main.ts:739,746` |
+| **The speed readout displays the assist** — `bodySpeed` reads `qvel[0..1]`, the exact slots the assist writes immediately before `mj_step` | measured locomotion | **no** | `src/physics.ts:1079-1083`, rendered at `src/main.ts:739,746` |
+
+The deafferentation row also scopes what `tools/vnc_rhythm.py` can and cannot
+conclude. Any negative rhythm result it produces is a finding about **our
+deafferented LIF model of MANC**, not about the MANC connectome. Per-neuron
+state in the kernel is membrane voltage, a refractory counter and a two-state
+alpha synapse — four read-write buffers besides the spike bitmask
+(`src/shaders/lif.wgsl:36-37`, `:39-40`) — with no spike-frequency adaptation, no synaptic depression, no
+conduction delay, no rebound current, and, per that row, no sensory feedback
+into the cord. The mechanisms a half-centre oscillator relies on to terminate a
+burst are therefore absent by construction, and a network built like this
+failing to alternate is a property of the reduction before it is evidence about
+the wiring. Read such a result as "this model does not oscillate," never as
+"MANC has no CPG."
 
 One more, about evidence rather than physics: **the walking policy's forward
 pass is not verified against the published SavedModel.**
@@ -301,11 +357,15 @@ Reading it:
   significant figures, because the other two flags are only read in code paths
   CPG mode never enters.
 
-The pitch/roll damper is not in that table, because **the project has never
-been run with it off.** It has been ×0.005 per CPG render frame for the entire
-life of the codebase, in every mode including Honest mode, so no measurement
-here — or in any commit message — describes a fly that could tip over. That
-baseline is unmeasured.
+The pitch/roll damper is not a column in that table, because every one of those
+16 runs had it on. It was ×0.005 per CPG render frame in every mode including
+Honest mode, and it was not switchable, so **no uprightness figure recorded
+anywhere before the `Physics.attitudeDamperEnabled` experiment is damper-free**
+— not in this table, not in §4.1's original numbers, not in any commit message.
+The damper-off baseline is no longer unmeasured, but it has only been measured
+on one path: the trained policy with the assist off (§4.1), where turning the
+damper off takes the fly from 2.019 to 0.068 cm/sim s and from +0.997
+uprightness to −0.87. The CPG path has still never been run damper-free.
 
 ---
 

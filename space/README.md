@@ -21,8 +21,13 @@ runs in the tab.**
 Two separate things move the body, and the difference matters:
 
 - A **trained RL walking policy** (Vaxenburg et al. 2025) genuinely walks the
-  fly from leg actuation and ground reaction alone. That path bypasses the
-  brain and the spine entirely.
+  fly forward from leg actuation and ground reaction — 2.019 cm per simulated
+  second against a 2.0 cm/s command, with the kinematic assist off. It does
+  not keep the fly upright, though: a pitch/roll damper bleeds off the body's
+  pitch and roll angular velocity every substep, and with that damper off the
+  fly capsizes and stops walking (0.068 cm/sim s, uprightness −0.87). The
+  translation is earned; the posture is not. That path bypasses the brain and
+  the spine entirely.
 - The **connectome** drives a hand-written tripod gait. It scales that gait but
   does not generate its rhythm — the leg phase is `sin(sim_time · freq)`.
 
@@ -49,16 +54,21 @@ so the 314 MB cache may not survive between visits.
 
 ## Credits and licensing
 
-Code is MIT. The data is not, and each piece keeps its own terms:
+The `license: mit` in this Space's header describes the source code only. The
+~314 MB of data the app downloads is not MIT, and each piece keeps its own
+terms:
 
 | | |
 |---|---|
-| Brain connectome | [FlyWire](https://flywire.ai) FAFB, CC-BY |
-| Ventral nerve cord | [Janelia MANC](https://www.janelia.org/project-team/flyem/manc-connectome) (Takemura et al. 2024) |
-| Body model + walking policy | [TuragaLab/flybody](https://github.com/TuragaLab/flybody) (Vaxenburg et al. 2025), Apache-2.0 |
-| Physics | MuJoCo compiled to WebAssembly |
+| Brain connectome | [FlyWire](https://flywire.ai) FAFB, CC-BY 4.0 |
+| Ventral nerve cord | [Janelia MANC](https://www.janelia.org/project-team/flyem/manc-connectome) (Takemura et al. 2024), CC-BY 4.0 |
+| Body model (MJCF + meshes) | [TuragaLab/flybody](https://github.com/TuragaLab/flybody) (Vaxenburg et al. 2025), Apache-2.0 |
+| Walking policy | [Janelia Figshare deposit](https://janelia.figshare.com/articles/dataset/25309105) (Vaxenburg et al. 2025), CC-BY 4.0 |
+| Physics | MuJoCo compiled to WebAssembly, Apache-2.0 |
 
-Full attribution in `NOTICE`; every approximation and shortcut is inventoried
-in `LIMITATIONS.md`.
+Full attribution in [NOTICE](NOTICE); the Apache-2.0 text is in
+[LICENSE-FLYBODY](LICENSE-FLYBODY) and the MIT text in [LICENSE](LICENSE).
+Every approximation and shortcut is inventoried in
+[LIMITATIONS.md](LIMITATIONS.md).
 
 Source: <https://github.com/abgnydn/webgpu-fly>

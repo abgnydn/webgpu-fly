@@ -42,11 +42,15 @@ abstract: >-
   rendered from the fly's head pose feeds back into the brain's optic
   neurons. An optional trained reinforcement-learning walking policy
   (Vaxenburg et al. 2025) runs as a pure-TypeScript forward pass and walks
-  the body from leg actuation and ground reaction alone, with the
-  kinematic assist off: 2.004-2.021 cm per simulated second against a
-  2.0 cm/s command, uprightness +0.997, no capsize across three
-  repetitions, versus 0.032 cm per simulated second with the policy
-  disabled. That path bypasses the brain and the ventral nerve cord — it
+  the body from leg actuation and ground reaction, with the kinematic
+  assist off: 2.019 cm per simulated second against a 2.0 cm/s command,
+  versus 0.032 cm per simulated second with the policy disabled. The
+  forward translation is earned that way; the posture is not. A pitch/roll
+  attitude damper runs every substep, and with it disabled the fly
+  capsizes and stops walking — 0.068 cm per simulated second, uprightness
+  -0.87 — so the +0.997 uprightness and the absence of capsizes are
+  products of that damper, not of the policy.
+  That path bypasses the brain and the ventral nerve cord — it
   is the published policy walking the fly, not the connectome. The
   forward pass is checked element-wise against an independent NumPy
   re-run of the same extracted weights, which validates the port's
