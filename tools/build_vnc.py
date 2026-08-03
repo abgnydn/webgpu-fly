@@ -80,6 +80,13 @@ NT_SIGN = {
     "unclear": 0,
     "unknown": 0,
 }
+
+# Motor neurons are the exception to the central glutamate rule: at the
+# neuromuscular junction fly muscle expresses ionotropic GluRs, not GluCl,
+# so a glutamatergic motor neuron is EXCITATORY onto its muscle. The sign
+# here also governs the motor neuron's (few) intra-VNC output edges.
+MOTOR_NT_SIGN = {**NT_SIGN, "glutamate": +1}
+
 NT_CONF_MIN = 0.5
 
 
@@ -248,10 +255,16 @@ def main() -> None:
     print("signing weights by presynaptic neurotransmitter …")
     pre_nt_by_idx = df["predictedNt"].fillna("unknown").astype(str).str.lower().to_numpy()
     pre_conf = pd.to_numeric(df["predictedNtProb"], errors="coerce").fillna(0.0).to_numpy()
+    class_arr = df.apply(classify, axis=1).to_numpy()
     sign_arr = np.zeros(N, dtype=np.float32)
     for i, nt in enumerate(pre_nt_by_idx):
         if pre_conf[i] >= NT_CONF_MIN:
-            sign_arr[i] = NT_SIGN.get(nt, 0)
+            table = MOTOR_NT_SIGN if class_arr[i] == CLASS_MOTOR else NT_SIGN
+            sign_arr[i] = table.get(nt, 0)
+
+    n_nmj = int(((class_arr == CLASS_MOTOR) & (pre_nt_by_idx == "glutamate")
+                 & (pre_conf >= NT_CONF_MIN)).sum())
+    print(f"  {n_nmj:,} glutamatergic motor neurons signed +1 (NMJ)")
 
     pre_idx = edges["pre_idx"].to_numpy(dtype=np.uint32)
     post_idx = edges["post_idx"].to_numpy(dtype=np.uint32)
@@ -283,7 +296,7 @@ def main() -> None:
             soma = row.get("position")
         x, y, z = parse_position(soma)
         pos[i] = (x, y, z)
-        cell_class[i] = classify(row)
+        cell_class[i] = class_arr[i]
         leg_seg[i] = leg_segment_packed(row)
         # predictedNtProb gives float confidence; default 0
         nt_conf[i] = float(pre_conf[i])
