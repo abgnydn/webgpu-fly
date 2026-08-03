@@ -157,10 +157,18 @@ async function main() {
   // Bail before the ~300 MB of binaries, not after: a Safari/Firefox
   // visitor used to sit through the whole connectome download only to be
   // told their browser can't run it.
-  if (!("gpu" in navigator)) {
-    log("navigator.gpu missing — needs Chrome, Edge, or Safari 26+", "err");
+  // Ask for the adapter, don't just check that navigator.gpu exists: a
+  // blocklisted GPU or a VM without passthrough exposes navigator.gpu and
+  // then hands back a null adapter, so an existence check lets that visitor
+  // download everything before failing on requestAdapter.
+  const gpuOk = await (async () => {
+    try { return !!(navigator.gpu && await navigator.gpu.requestAdapter()); }
+    catch { return false; }
+  })();
+  if (!gpuOk) {
+    log("no usable WebGPU adapter — needs Chrome, Edge, or Safari 26+", "err");
     bootFail(
-      "WebGPU unavailable in this browser — the simulator needs Chrome, Edge, or Safari 26+ (Firefox: Windows only, 141+).",
+      "WebGPU unavailable here — the simulator needs Chrome, Edge, or Safari 26+ (Firefox: Windows only, 141+). If you are on one of those, your GPU may be blocklisted or unavailable to the browser.",
       // Relative, not root-absolute: the site may be served under a
       // subpath (Hugging Face Space), where "/index.html" 404s.
       { href: "index.html", text: "→ read what this project is (no WebGPU needed)" },
