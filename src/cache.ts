@@ -63,12 +63,68 @@ async function idbPut(key: string, value: Entry): Promise<void> {
   });
 }
 
+/** Emit progress at most once per MB — see readWithProgress. */
+const PROGRESS_STEP = 1_000_000;
+
+/** "42.0 / 125.7 MB (33%)", or just "42.0 MB" when the length is unknown. */
+export function progressText(got: number, total: number): string {
+  const mb = (b: number) => (b / 1e6).toFixed(1);
+  return total > 0
+    ? `${mb(got)} / ${mb(total)} MB (${Math.round((100 * got) / total)}%)`
+    : `${mb(got)} MB`;
+}
+
+/**
+ * Drain `r.body` chunk by chunk so the caller can paint a progress line.
+ * Chunks are kept as-is and copied once into a pre-sized buffer — growing
+ * a concatenated array per chunk would be quadratic on a 140 MB bundle.
+ * The callback is throttled to one call per MB: at chunk granularity it
+ * fires thousands of times a second and the DOM writes on the other end
+ * measurably slow the download.
+ */
+async function readWithProgress(
+  r: Response,
+  onProgress: (got: number, total: number) => void,
+): Promise<ArrayBuffer> {
+  const len = Number(r.headers.get("Content-Length"));
+  // Absent / non-numeric / 0 → report bytes only, never "/ 0 MB".
+  const total = Number.isFinite(len) && len > 0 ? len : 0;
+  const reader = r.body!.getReader();
+  const chunks: Uint8Array[] = [];
+  let got = 0;
+  let nextEmit = PROGRESS_STEP;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    got += value.byteLength;
+    if (got >= nextEmit) {
+      onProgress(got, total);
+      nextEmit = got + PROGRESS_STEP;
+    }
+  }
+  const out = new Uint8Array(got);
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.byteLength;
+  }
+  onProgress(got, total);
+  return out.buffer;
+}
+
 /**
  * Get bytes for `key` (the cache key) by fetching `url` if not cached.
  * If `key` is already in IDB, return its bytes immediately. Otherwise
  * fetch over network, store, return. Network errors propagate.
+ * `onProgress` (bytes so far, total or 0) streams the download instead of
+ * buffering it whole; without it the response is read in one shot.
  */
-export async function getOrFetch(key: string, url: string): Promise<ArrayBuffer> {
+export async function getOrFetch(
+  key: string,
+  url: string,
+  onProgress?: (got: number, total: number) => void,
+): Promise<ArrayBuffer> {
   try {
     const hit = await idbGet(key);
     if (hit) return hit.bytes;
@@ -78,7 +134,9 @@ export async function getOrFetch(key: string, url: string): Promise<ArrayBuffer>
   }
   const r = await fetch(url);
   if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
-  const bytes = await r.arrayBuffer();
+  const bytes = onProgress && r.body
+    ? await readWithProgress(r, onProgress)
+    : await r.arrayBuffer();
   // Fire-and-forget the IDB write — we have the bytes in memory and
   // the caller doesn't need to block on the cache populating. For
   // 125 MB blobs the IDB write is ~30 s and was dominating cold-load
