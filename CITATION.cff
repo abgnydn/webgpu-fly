@@ -3,10 +3,10 @@ message: "If you use webgpu-fly in academic work, please cite as below."
 type: software
 title: "webgpu-fly: A real Drosophila brain, spinal cord, and body running in a browser tab via WebGPU"
 authors:
-  - family-names: Günaydın
-    given-names: Ahmet Barış
+  - family-names: Gunaydin
+    given-names: Ahmet Baris
     email: hi@barisgunaydin.com
-    affiliation: Independent researcher
+    affiliation: Independent Researcher
 repository-code: "https://github.com/abgnydn/webgpu-fly"
 url: "https://webgpu-fly.pages.dev"
 license: MIT

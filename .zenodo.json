@@ -7,8 +7,8 @@
   "language": "eng",
   "creators": [
     {
-      "name": "Günaydın, Ahmet Barış",
-      "affiliation": "Independent researcher"
+      "name": "Gunaydin, Ahmet Baris",
+      "affiliation": "Independent Researcher"
     }
   ],
   "description": "<p><strong>webgpu-fly</strong> runs a whole-animal <em>Drosophila</em> nervous system inside a web browser with no installation and no server. The FlyWire FAFB whole-brain connectome (139,255 neurons, ~15 million synaptic connections) and the Janelia MANC ventral-nerve-cord connectome (23,188 neurons, 5.2 million connections) are each simulated as leaky integrate-and-fire (LIF) networks in fused WebGPU compute kernels &mdash; gather, integrate, threshold and reset in a single kernel, with presynaptic-neurotransmitter signs pre-baked into the connection weights so the inner loop never branches on excitatory/inhibitory type.</p><p>The brain's descending command neurons drive the spinal cord by cell-type name match (the same named cell on both sides of the brain&ndash;VNC boundary), and the spine's 369 leg motor neurons are averaged into a walking magnitude and a turn bias that scale a hand-written tripod gait, which in turn actuates a physically simulated 67-body, 111-actuator <strong>TuragaLab flybody</strong> model running in MuJoCo compiled to WebAssembly. The connectome scales that gait; it does not generate the stepping rhythm, which is an analytic sinusoid of simulation time. A 64&times;16 retina rendered each frame from the fly's own head pose is fed back into the brain's optic neurons, closing a sensorimotor loop. An optional trained reinforcement-learning walking policy (Vaxenburg et al. 2025) runs as a pure-TypeScript forward pass and walks the body from leg actuation and ground reaction, with the kinematic assist switched off: 2.019 cm per simulated second against a 2.0 cm/s command, versus 0.032 cm per simulated second with the policy disabled. The forward translation is earned that way; the posture is not. A pitch/roll attitude damper runs every substep, and with it disabled the fly capsizes and stops walking &mdash; 0.068 cm per simulated second, uprightness -0.87 &mdash; so the +0.997 uprightness and the absence of capsizes across three repetitions are products of that damper, not of the policy. That path bypasses the brain and the ventral nerve cord entirely &mdash; it is the published policy walking the fly, not the connectome. The forward pass is checked element-wise against an independent NumPy re-run of the same extracted weights; that check validates the port's arithmetic, not the assumed layer architecture against the original SavedModel.</p><p>The deployment is a game: the player fires real descending neurons with keypresses to steer the fly to a target, and a winning run produces a deterministic, shareable replay URL that re-executes the identical neuron cascade against the same connectome &mdash; a brain trace, not a video. Performance is reported honestly: the brain LIF kernel is memory-bandwidth-bound and runs at ~0.25 kHz of biological time on an Apple M2 Pro, benchmarked on the same machine against NEST 3.10 (0.67 kHz) and a hand-written multicore Rust port (0.45 kHz). The original 1 kHz target was unreachable for any of the three on that hardware; the contribution is reachability &mdash; a real connectome simulation behind a single URL &mdash; not raw throughput. Known limitations (the connectome scaling rather than generating the gait, the closed-loop visual-reflex approximation, kinematic-assist options, the pitch/roll attitude damper, the unverified policy architecture) are enumerated in LIMITATIONS.md.",
@@ -27,5 +27,12 @@
     "in-browser computation",
     "reproducible research"
   ],
-  "notes": "Original code is MIT (see LICENSE). The TuragaLab flybody model and MuJoCo are Apache-2.0 (see LICENSE-FLYBODY and NOTICE); the FlyWire and Janelia MANC connectome data and the trained walking policy are CC-BY 4.0 and attributed in NOTICE. Generative AI was used as a coding aid; all output was author-reviewed and checked against the test suite and the upstream references."
+  "notes": "Original code is MIT (see LICENSE). The TuragaLab flybody model and MuJoCo are Apache-2.0 (see LICENSE-FLYBODY and NOTICE); the FlyWire and Janelia MANC connectome data and the trained walking policy are CC-BY 4.0 and attributed in NOTICE. Generative AI was used as a coding aid; all output was author-reviewed and checked against the test suite and the upstream references.",
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/abgnydn/webgpu-fly",
+      "relation": "isSupplementTo",
+      "scheme": "url"
+    }
+  ]
 }
