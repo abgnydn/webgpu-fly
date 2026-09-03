@@ -1,8 +1,6 @@
 // brain.ts — parses public/brain.bin into typed views.
 // Format spec: tools/build_csr.py docstring (single source of truth).
 
-import { getOrFetch } from "./cache";
-
 export const MAGIC = "WGFLYBRN";
 export const VNC_MAGIC = "WGFLYVNC";
 export const HEADER_BYTES = 64;
@@ -42,6 +40,7 @@ export async function loadBrain(
   // key is the full URL including ?v=<sha> from assets.json, so a
   // new build naturally invalidates the cache (different URL = new
   // entry), and idbPut deletes the previous generation of the same asset.
+  const { getOrFetch } = await import("./cache");
   const buf = await getOrFetch(url, url, onProgress);
   return parseBrain(buf);
 }
@@ -56,6 +55,7 @@ export function parseBrain(buf: ArrayBuffer): Brain {
     throw new Error(`bad magic: got "${magic}", expected "${MAGIC}" or "${VNC_MAGIC}"`);
   }
   const version = dv.getUint32(8, true);
+  if (version !== 1) throw new Error(`unsupported brain version ${version}`);
   const numNeurons = dv.getUint32(12, true);
   const numEdges = dv.getUint32(16, true);
   const flags = dv.getUint32(20, true);
