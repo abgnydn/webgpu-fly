@@ -77,11 +77,13 @@ export interface ObsNormStats {
   std: Float32Array;      // length 286
 }
 
-export async function loadWalkingObsNorm(
-  url: string = (import.meta.env.VITE_WALKING_OBS_NORM_URL ?? "/walking-obs-norm.bin"),
-): Promise<ObsNormStats> {
-  const { getOrFetch } = await import("./cache");
-  const buf = await getOrFetch(url, url);
+/** Parse a walking-obs-norm.bin buffer.
+ *
+ * The format is defined by tools/dump_flybody_spec.py:126-132: headerless,
+ * little-endian `u32 nDims, u32 reserved, f32[n] mean, f32[n] std`. The
+ * exact-size check is the only validation; it intentionally rejects files
+ * that do not match this layout exactly. */
+export function parseObsNorm(buf: ArrayBuffer): ObsNormStats {
   const dv = new DataView(buf);
   const n = dv.getUint32(0, true);
   // skip 4-byte reserved
@@ -91,6 +93,14 @@ export async function loadWalkingObsNorm(
   const mean = new Float32Array(buf, 8, n);
   const std = new Float32Array(buf, 8 + 4 * n, n);
   return { mean, std };
+}
+
+export async function loadWalkingObsNorm(
+  url: string = (import.meta.env.VITE_WALKING_OBS_NORM_URL ?? "/walking-obs-norm.bin"),
+): Promise<ObsNormStats> {
+  const { getOrFetch } = await import("./cache");
+  const buf = await getOrFetch(url, url);
+  return parseObsNorm(buf);
 }
 
 export interface ActOptions {
