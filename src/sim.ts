@@ -4,40 +4,10 @@
 import lifWgsl from "./shaders/lif.wgsl?raw";
 import accumWgsl from "./shaders/accumulate.wgsl?raw";
 import type { Brain } from "./brain";
+import { SimParams, DEFAULT_PARAMS, assertValidDt } from "./simParams";
 
-export interface SimParams {
-  dtMs: number;          // timestep in milliseconds, e.g. 1.0 for 1 kHz sim
-  tauMs: number;         // membrane time constant, e.g. 20 ms
-  vThresh: number;       // mV
-  vReset: number;        // mV
-  vRest: number;         // mV
-  refractoryMs: number;  // ms (rounded to integer steps)
-  extGain: number;       // multiplier on ext_input buffer
-  wSyn: number;          // mV per synapse — Shiu et al 2024 free parameter (0.275 mV)
-}
-
-// LIF state constants are from Shiu et al. 2024 (Nature 632:210–217;
-// github.com/philshiu/Drosophila_brain_model/model.py):
-//   v_0 / v_rst = -52 mV   v_th = -45 mV   t_mbr = 20 ms   t_rfc = 2.2 ms
-//   tau_syn = 5 ms (alpha synapse)
-//
-// The kernel runs a real two-state alpha synapse, A_SYN = exp(-1/5).
-// w_syn is tuned EMPIRICALLY (not from peak-matching) to land KC at the
-// canonical 5-15% on Mixed sensory. Alpha synapse integrates each spike
-// over ~5ms so the cascade amplifies non-linearly vs old single-step
-// direct injection — peak-matching gives way too hot a brain (73% KC).
-// 0.005 keeps the dataset's natural cascade strength visible without
-// runaway.
-export const DEFAULT_PARAMS: SimParams = {
-  dtMs: 1.0,
-  tauMs: 20.0,
-  vThresh: -45.0,
-  vReset: -52.0,
-  vRest: -52.0,
-  refractoryMs: 2.2,
-  extGain: 2.0,
-  wSyn: 0.005,
-};
+export { DEFAULT_PARAMS, assertValidDt } from "./simParams";
+export type { SimParams } from "./simParams";
 
 const PARAMS_BYTES = 36; // matches struct Params in lif.wgsl (9 × 4 bytes)
 
@@ -73,6 +43,7 @@ export class FlySim {
   private prevIsA_ = true;
 
   static async create(brain: Brain, params: SimParams = DEFAULT_PARAMS): Promise<FlySim> {
+    assertValidDt(params); // fail fast before touching the GPU or assets
     if (!("gpu" in navigator)) throw new Error("WebGPU not available");
     const adapter = await navigator.gpu.requestAdapter();
     if (!adapter) throw new Error("no GPU adapter");

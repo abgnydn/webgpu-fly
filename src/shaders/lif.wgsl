@@ -43,8 +43,9 @@ const WG_SIZE : u32 = 64u;
 
 // a_syn = exp(-dt / tau_syn) for dt = 1 ms, tau_syn = 5 ms.
 // Const, so it silently assumes SimParams.dtMs = 1 — that host param
-// feeds alpha and the refractory step count but not this value. Make it
-// a Params field if a different dt is ever used.
+// feeds alpha and the refractory step count but not this value. The host
+// enforces this via assertValidDt() in src/simParams.ts. Make A_SYN a
+// Params field if a different dt is ever used.
 const A_SYN  : f32 = 0.81873;
 
 fn spike_bit(idx : u32) -> f32 {
