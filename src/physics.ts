@@ -100,7 +100,6 @@ export class Physics {
     // (floor.xml, fruitfly.xml, 85 OBJs) into one binary so we get a
     // single IDB transaction instead of 87. Per-file IDB transactions
     // were costing ~300-1000 ms each (~34 s total even on cache hits!).
-    const base = (import.meta.env.VITE_FLYBODY_URL || "/flybody").replace(/\/$/, "");
     const bundleUrl = (import.meta.env.VITE_FLYBODY_BUNDLE_URL || "/flybody.bundle.bin")
       + (((globalThis as unknown as { __flybodyBundleVersion?: string }).__flybodyBundleVersion)
         ? `?v=${(globalThis as unknown as { __flybodyBundleVersion?: string }).__flybodyBundleVersion}`
@@ -165,7 +164,6 @@ export class Physics {
       totalBytes += data.byteLength;
     }
     onProgress?.(`loaded ${meshFiles.length} meshes from bundle (${(totalBytes / 1e6).toFixed(0)} MB)`);
-    void base;  // base URL retained for backward-compat env var; unused now.
 
     // The compiler resolves `<include file="fruitfly.xml"/>` from the
     // VFS, so we have to register fruitfly.xml there as well — the
