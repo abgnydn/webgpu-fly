@@ -50,6 +50,8 @@ VITE_FLYBODY_URL=https://<r2-public-host>/flybody
 VITE_FLYBODY_BUNDLE_URL=https://<r2-public-host>/flybody.bundle.bin
 VITE_WALKING_POLICY_URL=https://<r2-public-host>/walking-policy.bin
 VITE_WALKING_OBS_NORM_URL=https://<r2-public-host>/walking-obs-norm.bin
+VITE_WALKING_REF_URL=https://<r2-public-host>/walking-ref.bin
+VITE_ASSET_MANIFEST_URL=https://<r2-public-host>/assets.json
 ```
 
 `<r2-public-host>` is the bucket's r2.dev subdomain (printed by the
