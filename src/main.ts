@@ -638,6 +638,7 @@ async function main() {
       bootStage("vnc", "run", `fetching MANC connectome — ${progressText(got, total)}`);
     });
     const vncMetaResp = await fetch(vncMetaUrl + versionFor("vnc.meta.json"));
+    if (!vncMetaResp.ok) throw new Error(`vnc.meta.json: HTTP ${vncMetaResp.status}`);
     vncMeta = await vncMetaResp.json();
     vncSim = await FlySim.create(vncBrain, { ...DEFAULT_PARAMS });
     log(`real VNC loaded: ${vncBrain.header.numNeurons.toLocaleString()} neurons, ${vncBrain.header.numEdges.toLocaleString()} edges (Janelia MANC)`, "ok");
@@ -925,7 +926,7 @@ async function main() {
 
       // Per-class peak active count
       const peak = new Map<number, number>();
-      for (const snap of [...Array(viewer.numSnapshots)].map((_, i) => viewer["snapshots"][i] as Float32Array)) {
+      for (const snap of viewer.getSnapshots().slice()) {
         const live = new Map<number, number>();
         for (let i = 0; i < snap.length; i++) {
           if (snap[i] > 0) live.set(neurons.superClass[i], (live.get(neurons.superClass[i]) ?? 0) + 1);
@@ -939,7 +940,7 @@ async function main() {
         const total = sizes.get(cls) ?? 1;
         log(`  ${SUPER_CLASS[cls] ?? cls}: ${n.toLocaleString()} / ${total.toLocaleString()} (${(100 * n / total).toFixed(1)}%)`);
       }
-      const snaps = [...Array(viewer.numSnapshots)].map((_, i) => viewer["snapshots"][i] as Float32Array);
+      const snaps = viewer.getSnapshots().slice();
       logHeroValidation(snaps);
 
       // Wire scrub bar to new snapshot count, autoplay
@@ -999,11 +1000,11 @@ async function main() {
       }
 
       let recruited = 0;
-      const last = viewer["snapshots"][viewer.numSnapshots - 1] as Float32Array;
+      const last = viewer.getSnapshot(viewer.numSnapshots - 1) as Float32Array;
       for (let i = 0; i < last.length; i++) if (last[i] > 0) recruited++;
       log(`final-window recruits: ${recruited.toLocaleString()} / ${header.numNeurons.toLocaleString()}`);
       if (recruited > 100) {
-        const snaps = [...Array(viewer.numSnapshots)].map((_, j) => viewer["snapshots"][j] as Float32Array);
+        const snaps = viewer.getSnapshots().slice();
         logHeroValidation(snaps);
       }
 
@@ -1336,11 +1337,11 @@ async function main() {
       log(`${N_SNAPSHOTS * STEPS_PER_SNAPSHOT} steps in ${elapsed.toFixed(0)} ms`, "ok");
 
       let recruited = 0;
-      const last = viewer["snapshots"][viewer.numSnapshots - 1] as Float32Array;
+      const last = viewer.getSnapshot(viewer.numSnapshots - 1) as Float32Array;
       for (let i = 0; i < last.length; i++) if (last[i] > 0) recruited++;
       log(`final-window recruits: ${recruited.toLocaleString()} / ${header.numNeurons.toLocaleString()}`);
       if (recruited > 100) {
-        const snaps = [...Array(viewer.numSnapshots)].map((_, j) => viewer["snapshots"][j] as Float32Array);
+        const snaps = viewer.getSnapshots().slice();
         logHeroValidation(snaps);
       }
 

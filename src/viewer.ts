@@ -325,6 +325,8 @@ export class FlyViewer {
 
   setAutoplay(on: boolean) { this.autoplay = on; }
   get numSnapshots() { return this.snapshots.length; }
+  getSnapshot(idx: number): Float32Array | undefined { return this.snapshots[idx]; }
+  getSnapshots(): readonly Float32Array[] { return this.snapshots; }
   get current() { return this.currentIdx; }
 
   dispose() {
