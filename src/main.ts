@@ -12,6 +12,7 @@ import { loadWalkingRef } from "./walking-ref";
 import { loadManifest, type VersionFor } from "./manifest";
 import { progressText } from "./cache";
 import { Game, type DnEntry } from "./game";
+import { assertVncMetaShape, type VncMeta } from "./vncMeta";
 
 // ?mode=game (default) shows the playable HUD; ?mode=science keeps the
 // classic stim-button + log layout. The URL hash carrying `r=<base64>`
@@ -622,14 +623,7 @@ async function main() {
   // If vnc.bin is missing, the synthetic 200-neuron spine in vnc.ts
   // remains the motor source — same code path, different controller.
   let vncSim: FlySim | null = null;
-  let vncMeta: {
-    dn_inputs: Record<string, number[]>;
-    motor: Record<string, { all: number[] } & Record<string, number[]>>;
-    motor_by_subclass: Record<string, number[]>;
-    motor_by_target: Record<string, number[]>;
-    num_neurons: number;
-    num_edges: number;
-  } | null = null;
+  let vncMeta: VncMeta | null = null;
   const vncUrl = import.meta.env.VITE_VNC_URL || "/vnc.bin";
   const vncMetaUrl = import.meta.env.VITE_VNC_META_URL || "/vnc.meta.json";
   bootStage("vnc", "run", "fetching MANC connectome (43 MB)…");
@@ -640,11 +634,14 @@ async function main() {
     const vncMetaResp = await fetch(vncMetaUrl + versionFor("vnc.meta.json"));
     if (!vncMetaResp.ok) throw new Error(`vnc.meta.json: HTTP ${vncMetaResp.status}`);
     vncMeta = await vncMetaResp.json();
+    assertVncMetaShape(vncMeta);
     vncSim = await FlySim.create(vncBrain, { ...DEFAULT_PARAMS });
     log(`real VNC loaded: ${vncBrain.header.numNeurons.toLocaleString()} neurons, ${vncBrain.header.numEdges.toLocaleString()} edges (Janelia MANC)`, "ok");
     log(`  ${Object.keys(vncMeta!.dn_inputs).length} DN types, ${Object.keys(vncMeta!.motor).length} leg groups`);
     bootStage("vnc", "ok", `${vncBrain.header.numNeurons.toLocaleString()} neurons, ${Object.keys(vncMeta!.motor).length} leg groups`);
   } catch (e) {
+    vncSim = null;
+    vncMeta = null;
     log(`real VNC unavailable (${(e as Error).message}); using synthetic spine`, "warn");
     bootSkip("vnc", "synthetic 200-neuron fallback (vnc.bin missing)");
   }
