@@ -19,13 +19,16 @@
 #     transparently. Subsequent same-build loads skip the network.
 #
 # After this script, set the Pages project's environment variables:
-#   VITE_BRAIN_URL       = https://<bucket>.<account>.r2.dev/brain.bin
-#   VITE_BRAIN_META_URL  = https://<bucket>.<account>.r2.dev/brain.meta.json
-#   VITE_VNC_URL         = https://<bucket>.<account>.r2.dev/vnc.bin
-#   VITE_VNC_META_URL    = https://<bucket>.<account>.r2.dev/vnc.meta.json
-#   VITE_FLYBODY_URL     = https://<bucket>.<account>.r2.dev/flybody
-#   VITE_FLYBODY_BUNDLE_URL = https://<bucket>.<account>.r2.dev/flybody.bundle.bin
-#   VITE_WALKING_REF_URL    = https://<bucket>.<account>.r2.dev/walking-ref.bin
+#   VITE_BRAIN_URL            = https://<bucket>.<account>.r2.dev/brain.bin
+#   VITE_BRAIN_META_URL       = https://<bucket>.<account>.r2.dev/brain.meta.json
+#   VITE_VNC_URL              = https://<bucket>.<account>.r2.dev/vnc.bin
+#   VITE_VNC_META_URL         = https://<bucket>.<account>.r2.dev/vnc.meta.json
+#   VITE_FLYBODY_URL          = https://<bucket>.<account>.r2.dev/flybody        # legacy — unused, physics.ts loads only the bundle
+#   VITE_FLYBODY_BUNDLE_URL   = https://<bucket>.<account>.r2.dev/flybody.bundle.bin
+#   VITE_WALKING_POLICY_URL   = https://<bucket>.<account>.r2.dev/walking-policy.bin
+#   VITE_WALKING_OBS_NORM_URL = https://<bucket>.<account>.r2.dev/walking-obs-norm.bin
+#   VITE_WALKING_REF_URL      = https://<bucket>.<account>.r2.dev/walking-ref.bin
+#   VITE_ASSET_MANIFEST_URL   = https://<bucket>.<account>.r2.dev/assets.json
 
 set -euo pipefail
 # Force C locale so printf "%.1f" gets `.` for decimal regardless of
@@ -89,11 +92,13 @@ done
 
 echo
 echo "done. Set env vars in Cloudflare Pages → Settings → Environment Variables:"
-echo "  VITE_BRAIN_URL      = https://<r2-public-url>/brain.bin"
-echo "  VITE_BRAIN_META_URL = https://<r2-public-url>/brain.meta.json"
-echo "  VITE_VNC_URL        = https://<r2-public-url>/vnc.bin"
-echo "  VITE_VNC_META_URL   = https://<r2-public-url>/vnc.meta.json"
-echo "  VITE_FLYBODY_URL    = https://<r2-public-url>/flybody"
-echo "  VITE_FLYBODY_BUNDLE_URL = https://<r2-public-url>/flybody.bundle.bin"
-echo "  VITE_WALKING_REF_URL    = https://<r2-public-url>/walking-ref.bin"
-echo "  VITE_ASSET_MANIFEST_URL = https://<r2-public-url>/assets.json"
+echo "  VITE_BRAIN_URL            = https://<r2-public-url>/brain.bin"
+echo "  VITE_BRAIN_META_URL       = https://<r2-public-url>/brain.meta.json"
+echo "  VITE_VNC_URL              = https://<r2-public-url>/vnc.bin"
+echo "  VITE_VNC_META_URL         = https://<r2-public-url>/vnc.meta.json"
+echo "  VITE_FLYBODY_URL          = https://<r2-public-url>/flybody        # legacy — unused, physics.ts loads only the bundle"
+echo "  VITE_FLYBODY_BUNDLE_URL   = https://<r2-public-url>/flybody.bundle.bin"
+echo "  VITE_WALKING_POLICY_URL   = https://<r2-public-url>/walking-policy.bin"
+echo "  VITE_WALKING_OBS_NORM_URL = https://<r2-public-url>/walking-obs-norm.bin"
+echo "  VITE_WALKING_REF_URL      = https://<r2-public-url>/walking-ref.bin"
+echo "  VITE_ASSET_MANIFEST_URL   = https://<r2-public-url>/assets.json"
