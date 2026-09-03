@@ -43,7 +43,7 @@ Binary format (authoritative; the WGSL kernel and TS loader must agree):
     sign(pre_nt) × synapse_count
     if pre_nt confidence < CONF_THRESHOLD or pre_nt is modulatory, weight = 0
 
-Total ≈ 64 + 32N + 4(N+1) + 8E bytes. For N=140k, E=5M ≈ 45 MB.
+Total ≈ 64 + 32N + 4(N+1) + 8E bytes. For N=140k, E=15M ≈ 120 MB.
 """
 from __future__ import annotations
 

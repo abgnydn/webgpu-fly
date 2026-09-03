@@ -21,11 +21,13 @@ shape is different — see README.
   preceded by a bitset-clear dispatch.
   Per neuron: gather presynaptic spikes via CSR row, integrate Vm with
   leak, threshold + reset, write spike bit to output buffer.
-- **Snapshot exporter** (planned): every N ms, copy `vm` or `spike_count`
-  buffer to disk. Consumed by the WGDNA-4D viewer with a neuron-mesh
-  renderer instead of the voxel grid renderer.
-- **Embodiment** (later): map descending-neuron (DN) activity to
-  TuragaLab/flybody MuJoCo model.
+- **Snapshots**: in-memory capture via `FlySim.captureRollingRate` and
+  replay/apply via `FlyViewer.pushSnapshot`/`applySnapshot`. No disk
+  export or WGDNA-4D viewer; used for live rate maps and trajectory
+  visualization.
+- **Embodiment**: descending-neuron (DN) activity drives the
+  TuragaLab/flybody MuJoCo model through `src/vnc.ts` (brain→body
+  bridge) and is rendered by the body graph in `src/room.ts`.
 
 ## Binary format
 

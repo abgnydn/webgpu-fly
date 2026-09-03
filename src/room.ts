@@ -328,7 +328,15 @@ export class Room {
     const dy = this.targetPos[1] - qpos[1];
     return Math.sqrt(dx * dx + dy * dy);
   }
-  setEyeGlow(_: number) { /* TODO: locate head body, modulate emissive. */ }
+  private eyeGlowWarned = false;
+  setEyeGlow(_brightness: number) {
+    // Intentional visual-hook stub: eye glow never affects physics/drive.
+    void _brightness;
+    if (!this.eyeGlowWarned) {
+      this.eyeGlowWarned = true;
+      console.warn("setEyeGlow: unimplemented — head-body emissive modulation not wired; ignoring brightness");
+    }
+  }
 
   // --- scene-graph build (zalo pattern) -------------------------------------
   private buildBodyGraphFromMujoco(phys: Physics) {
@@ -473,7 +481,8 @@ export class Room {
     const haveUV = tAdr >= 0 && mesh_texcoord;
     const swUV = new Float32Array(vNum * 2);
     const swNormal = new Float32Array(vNum * 3);
-    if (haveUV || true) {
+    // Always run: face-normal remap is required even without UVs. UV writes remain guarded below.
+    {
       const fTexAdr = fAdr * 3;
       const fNormAdr = fAdr * 3;
       for (let t = 0; t < fNum; t++) {
