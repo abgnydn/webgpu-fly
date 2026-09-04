@@ -50,6 +50,10 @@ jobs:
         run: npm run check:py
         # Stdlib compileall only — no numpy/pandas needed.
 
+      - name: Rust baseline check
+        run: npm run check:rs
+        # ubuntu-latest ships Rust; --locked pins rayon via Cargo.lock.
+
       - name: Shell syntax
         run: npm run check:sh
 
