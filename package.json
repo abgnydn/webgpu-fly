@@ -17,6 +17,7 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "check:py": "PYTHONDONTWRITEBYTECODE=1 python3 -m compileall -q tools",
+    "check:rs": "cargo check --locked --manifest-path tools/cpu-bench/Cargo.toml",
     "check:sh": "for f in tools/*.sh; do bash -n \"$f\"; done",
     "check:json": "node -e \"const fs=require('fs');for(const f of ['package.json','vercel.json','r2-cors.json','.zenodo.json','tsconfig.json']){JSON.parse(fs.readFileSync(f,'utf8'));}JSON.parse(fs.readFileSync('wrangler.jsonc','utf8').replace(/^\\s*\\/\\/.*/gm,''));console.log('json-ok')\"",
     "data": "bash tools/download_data.sh",
