@@ -17,11 +17,11 @@ export interface WalkingRef {
   dt: number;
 }
 
-export async function loadWalkingRef(
-  url: string = (import.meta.env.VITE_WALKING_REF_URL ?? "/walking-ref.bin"),
-): Promise<WalkingRef> {
-  const { getOrFetch } = await import("./cache");
-  const buf = await getOrFetch(url, url);
+/**
+ * Parse a baked walking-ref binary buffer. Format spec lives in
+ * tools/bake_walking_ref.py docstring.
+ */
+export function parseWalkingRef(buf: ArrayBuffer): WalkingRef {
   const dv = new DataView(buf);
   const magic = String.fromCharCode(...new Uint8Array(buf, 0, 8));
   if (magic !== MAGIC) throw new Error(`bad magic: got "${magic}", expected "${MAGIC}"`);
@@ -37,4 +37,12 @@ export async function loadWalkingRef(
   }
   const qpos = new Float32Array(buf, HEADER_BYTES, numFrames * 7);
   return { qpos, numFrames, dt };
+}
+
+export async function loadWalkingRef(
+  url: string = (import.meta.env.VITE_WALKING_REF_URL ?? "/walking-ref.bin"),
+): Promise<WalkingRef> {
+  const { getOrFetch } = await import("./cache");
+  const buf = await getOrFetch(url, url);
+  return parseWalkingRef(buf);
 }
