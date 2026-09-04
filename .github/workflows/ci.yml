@@ -17,8 +17,9 @@ concurrency:
 
 jobs:
   build:
-    name: typecheck · unit · build
+    name: typecheck · unit · build · static
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -39,6 +40,31 @@ jobs:
       - name: Unit tests
         run: npm run test:unit
         # Needs node >= 22.18 for unflagged TypeScript stripping.
+
+      - name: E2E collection (no browser)
+        run: npm run test:e2e:list
+        # Parses playwright.config.ts + every tests/*.spec.ts without
+        # launching Chromium — the full run needs WebGPU (see below).
+
+      - name: Python syntax
+        run: npm run check:py
+        # Stdlib compileall only — no numpy/pandas needed.
+
+      - name: Shell syntax
+        run: npm run check:sh
+
+      - name: JSON configs
+        run: npm run check:json
+        # Strict JSON.parse for *.json; wrangler.jsonc gets a
+        # line-comment strip first (it has // comments, no blocks).
+
+      - name: Manifest consistency
+        run: |
+          tracked=$(grep -E '^    "[a-z]' tools/write_manifest.py | sed -E 's/.*"([^"]+)".*/\1/' | sort -u)
+          used=$(grep -hoE 'versionFor\("[^"]+"\)' src/*.ts | sed -E 's/.*"([^"]+)".*/\1/' | sort -u)
+          diff <(echo "$tracked") <(echo "$used")
+        # tools/write_manifest.py TRACKED must equal the versionFor()
+        # call sites, or a new asset ships without cache busting.
 
       - name: Build
         run: npm run build
