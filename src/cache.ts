@@ -86,6 +86,7 @@ async function readWithProgress(
   r: Response,
   onProgress: (got: number, total: number) => void,
 ): Promise<ArrayBuffer> {
+  if (!r.body) throw new Error("Response body is null");
   const len = Number(r.headers.get("Content-Length"));
   // Absent / non-numeric / 0 → report bytes only, never "/ 0 MB".
   const total = Number.isFinite(len) && len > 0 ? len : 0;
