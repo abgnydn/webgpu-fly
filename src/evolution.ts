@@ -10,19 +10,7 @@
 // lift_offset, stride_gain, drag_coeff. Decoded inside evolve.wgsl.
 
 import evolveWgsl from "./shaders/evolve.wgsl?raw";
-
-export const POLICY_DIM = 8;
-
-export interface EvolvedGait {
-  freq: number;        // Hz (decoded from log_freq)
-  coxaAmp: number;
-  femurAmp: number;
-  tibiaAmp: number;
-  swingRatio: number;
-  liftOffset: number;
-  strideGain: number;
-  dragCoeff: number;
-}
+import { POLICY_DIM, decode, type EvolvedGait } from "./evolutionParams";
 
 export interface EvolutionConfig {
   population: number;
@@ -224,16 +212,3 @@ function gauss(): number {
   return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
 }
 
-function decode(p: Float32Array): EvolvedGait {
-  const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x));
-  return {
-    freq: 5.0 * Math.exp(clamp(p[0], -1.5, 1.5)),
-    coxaAmp: clamp(p[1], 0, 1.5),
-    femurAmp: clamp(p[2], 0, 1.5),
-    tibiaAmp: clamp(p[3], 0, 1.5),
-    swingRatio: clamp(p[4], 0.1, 0.9),
-    liftOffset: clamp(p[5], 0, 1),
-    strideGain: clamp(p[6], 0, 2),
-    dragCoeff: clamp(p[7], 0, 1),
-  };
-}
