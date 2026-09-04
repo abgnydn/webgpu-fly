@@ -39,6 +39,8 @@ export interface GameContext {
   /** Called when game wants to reset visualization snapshots. */
   resetSim: () => void;
   log: (s: string, cls?: "" | "ok" | "warn" | "err") => void;
+  /** Optional fixed placement for the very first round (game-first landing page). */
+  firstTarget?: { angleDeg: number; radiusCm: number };
 }
 
 const WIN_RADIUS_CM = 0.6;          // body within 6 mm of target = win
@@ -83,6 +85,7 @@ export class Game {
   private replayIdx = 0;
   private brainLoopRunning = false;
   private dailyMode = false;
+  private firstRound = true;
 
   // HUD elements
   private hud!: HTMLDivElement;
@@ -264,8 +267,26 @@ export class Game {
     this.events = [];
     this.spikeCount = 0;
     this.pressed.clear();
-    this.targetSeed = this.dailyMode ? dailySeed() : ((Math.random() * 0xffffffff) >>> 0);
-    this.placeTargetFromSeed(this.targetSeed);
+
+    if (this.firstRound && this.ctx.firstTarget) {
+      // Game-first landing page: place the first target dead ahead so the
+      // player immediately sees the fly respond. Later rounds are random.
+      const { angleDeg, radiusCm } = this.ctx.firstTarget;
+      const angle = (angleDeg * Math.PI) / 180;
+      const tx = Math.cos(angle) * radiusCm;
+      const ty = Math.sin(angle) * radiusCm;
+      this.ctx.room.targetPos[0] = tx;
+      this.ctx.room.targetPos[1] = ty;
+      this.ctx.room.setTargetPos(tx, ty);
+      this.targetSeed = 0;
+      this.ctx.firstTarget = undefined;
+      this.firstRound = false;
+    } else {
+      this.firstRound = false;
+      this.targetSeed = this.dailyMode ? dailySeed() : ((Math.random() * 0xffffffff) >>> 0);
+      this.placeTargetFromSeed(this.targetSeed);
+    }
+
     this.ctx.resetSim();
     this.ctx.room.resetFly();
     this.ctx.room.setDrive(0, 0);
