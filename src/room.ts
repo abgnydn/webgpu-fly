@@ -95,6 +95,9 @@ export class Room {
   private forward = 0;
   private turn = 0;
 
+  /** Frame hook installed by main.ts when the trained walker is active. Returns true when it consumed the physics budget. */
+  drivePolicyTick?: () => boolean;
+
   constructor(opts: RoomOpts) {
     const { container } = opts;
     const w = container.clientWidth;
@@ -573,7 +576,7 @@ export class Room {
       const mjY = -hit.z / VISUAL_SCALE;
       this.targetPos = [mjX, mjY, this.targetPos[2]];
       if (this.target) this.target.position.set(mjX, this.targetPos[2], -mjY);
-      if (this.targetGlow) this.targetGlow.position.copy(this.target!.position);
+      if (this.targetGlow && this.target) this.targetGlow.position.copy(this.target.position);
     };
     el.addEventListener("contextmenu", (e) => {
       e.preventDefault();
@@ -639,7 +642,7 @@ export class Room {
         // match native flybody's 500 Hz policy rate. When it returns
         // true, the render-frame's sim budget has already been spent
         // and we skip the trailing step(32).
-        const policyTook = (this as any).drivePolicyTick?.() ?? false;
+        const policyTook = this.drivePolicyTick?.() ?? false;
         if (!policyTook) {
           // Brain → VNC stand-in → body. Two motor primitives selected
           // by DN drive: tripod walk gait (amplitude = forward) and

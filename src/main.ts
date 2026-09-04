@@ -1261,7 +1261,7 @@ async function main() {
   let policyTickCount = 0;
   let policyActionStats = { absMax: 0, absMean: 0, count: 0 };
   (window as unknown as { __rlActionStats: typeof policyActionStats }).__rlActionStats = policyActionStats;
-  (room as any).drivePolicyTick = () => {
+  room.drivePolicyTick = () => {
     if (trainedActiveTargetCmS <= 0 || !trainedWalker || !physics) return false;
     // RAW obs, no normalization. The walking checkpoint shipped on
     // Figshare 25309105 has only the 15 policy-network variables —
