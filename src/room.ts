@@ -13,6 +13,7 @@
 
 import * as THREE from "three";
 import { Physics } from "./physics";
+import type { FlyMjModel } from "./mujocoModel";
 
 export interface RoomOpts {
   container: HTMLElement;
@@ -343,9 +344,9 @@ export class Room {
 
   // --- scene-graph build (zalo pattern) -------------------------------------
   private buildBodyGraphFromMujoco(phys: Physics) {
-    const m = phys.model as any;
-    const ngeom = m.ngeom as number;
-    const nbody = m.nbody as number;
+    const m = phys.model as FlyMjModel;
+    const ngeom = m.ngeom;
+    const nbody = m.nbody;
     const T = phys.mujoco.mjtGeom;
 
     // mesh-id → cached BufferGeometry, built from MuJoCo's processed buffers.
@@ -370,14 +371,14 @@ export class Room {
 
     // Walk every geom; build geometry, set local pos/quat (in body frame),
     // attach to body group.
-    const geomGroup = m.geom_group as Int32Array;
-    const geomBodyId = m.geom_bodyid as Int32Array;
-    const geomType = m.geom_type as Int32Array;
-    const geomDataId = m.geom_dataid as Int32Array;
-    const geomSize = m.geom_size as Float32Array;
-    const geomRgba = m.geom_rgba as Float32Array;
-    const geomPos = m.geom_pos as Float32Array;
-    const geomQuat = m.geom_quat as Float32Array;
+    const geomGroup = m.geom_group;
+    const geomBodyId = m.geom_bodyid;
+    const geomType = m.geom_type;
+    const geomDataId = m.geom_dataid;
+    const geomSize = m.geom_size;
+    const geomRgba = m.geom_rgba;
+    const geomPos = m.geom_pos;
+    const geomQuat = m.geom_quat;
 
     let visibleGeoms = 0;
     for (let g = 0; g < ngeom; g++) {
@@ -441,20 +442,20 @@ export class Room {
    * swizzle so the result lives in three.js y-up space without parent
    * rotation. */
   private buildMeshGeometry(phys: Physics, meshId: number): THREE.BufferGeometry {
-    const m = phys.model as any;
-    const mesh_vert = m.mesh_vert as Float32Array;
-    const mesh_normal = m.mesh_normal as Float32Array;
-    const mesh_texcoord = m.mesh_texcoord as Float32Array;
-    const mesh_face = m.mesh_face as Int32Array;
-    const mesh_facetexcoord = m.mesh_facetexcoord as Int32Array;
-    const mesh_facenormal = m.mesh_facenormal as Int32Array;
-    const mesh_vertadr = m.mesh_vertadr as Int32Array;
-    const mesh_vertnum = m.mesh_vertnum as Int32Array;
-    const mesh_normaladr = m.mesh_normaladr as Int32Array;
-    const mesh_normalnum = m.mesh_normalnum as Int32Array;
-    const mesh_texcoordadr = m.mesh_texcoordadr as Int32Array;
-    const mesh_faceadr = m.mesh_faceadr as Int32Array;
-    const mesh_facenum = m.mesh_facenum as Int32Array;
+    const m = phys.model as FlyMjModel;
+    const mesh_vert = m.mesh_vert;
+    const mesh_normal = m.mesh_normal;
+    const mesh_texcoord = m.mesh_texcoord;
+    const mesh_face = m.mesh_face;
+    const mesh_facetexcoord = m.mesh_facetexcoord;
+    const mesh_facenormal = m.mesh_facenormal;
+    const mesh_vertadr = m.mesh_vertadr;
+    const mesh_vertnum = m.mesh_vertnum;
+    const mesh_normaladr = m.mesh_normaladr;
+    const mesh_normalnum = m.mesh_normalnum;
+    const mesh_texcoordadr = m.mesh_texcoordadr;
+    const mesh_faceadr = m.mesh_faceadr;
+    const mesh_facenum = m.mesh_facenum;
 
     const vAdr = mesh_vertadr[meshId], vNum = mesh_vertnum[meshId];
     const vert = new Float32Array(mesh_vert.buffer, mesh_vert.byteOffset + vAdr * 3 * 4, vNum * 3).slice();
