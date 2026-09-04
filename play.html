@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>webgpu-fly — play</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: #06070a; color: #e6e6e6; font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", monospace; overflow: hidden; }
+
+      #app { display: grid; grid-template-columns: 1fr 1fr; height: 100vh; }
+      #brain-pane, #room-pane { position: relative; overflow: hidden; }
+      #brain-pane { border-right: 1px solid #1a1c20; }
+      #canvas-container, #room-container { position: absolute; inset: 0; }
+
+      /* Boot overlay — same pattern as app.html. */
+      #boot {
+        position: fixed; inset: 0; z-index: 1000;
+        background: radial-gradient(circle at 50% 35%, #0d1320, #06070a 70%);
+        color: #c2c5ca; font: 13px/1.5 -apple-system, "SF Pro Text", monospace;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        gap: 20px; transition: opacity 0.6s ease;
+      }
+      #boot.hidden { opacity: 0; pointer-events: none; }
+      #boot h1 { margin: 0; font-size: 28px; letter-spacing: 0.04em; color: #9ad7ff; font-weight: 500; }
+      #boot .sub { color: #6c7480; font-size: 12px; max-width: 420px; text-align: center; }
+      #boot .stages { display: grid; grid-template-columns: 18px 140px 1fr; gap: 8px 12px; align-items: center; min-width: 460px; }
+      #boot .stages .dot { width: 12px; height: 12px; border-radius: 50%; background: #2a3340; transition: background 0.3s; }
+      #boot .stages .dot.run { background: #f5c542; animation: pulse 1.4s ease-in-out infinite; }
+      #boot .stages .dot.ok  { background: #6cd28a; }
+      #boot .stages .label { color: #9ad7ff; font-variant-numeric: tabular-nums; }
+      #boot .stages .detail { color: #6c7480; font-variant-numeric: tabular-nums; }
+      #boot .blink { animation: pulse 1.6s ease-in-out infinite; color: #6c7480; font-size: 11px; }
+      @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.4 } }
+
+      /* Hidden log sink — tests and Game's log() read this. */
+      #out { position: absolute; left: -9999px; top: -9999px; width: 1px; height: 1px; overflow: hidden; white-space: pre-wrap; }
+
+      /* Game HUD — copied from app.html, enabled by default on the play page. */
+      #game-hud {
+        position: fixed; inset: 0;
+        pointer-events: none;
+        z-index: 1100;
+        display: block;
+      }
+      #game-top {
+        position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+        display: flex; gap: 22px;
+        background: rgba(6,7,10,0.72);
+        backdrop-filter: blur(6px);
+        padding: 10px 22px; border-radius: 6px;
+        border: 1px solid #1a2735;
+        font: 13px/1 -apple-system, "SF Mono", monospace;
+        color: #c2c5ca;
+        font-variant-numeric: tabular-nums;
+      }
+      #game-top .hud-item { color: #6c7480; }
+      #game-top .hud-item span { color: #9ad7ff; font-weight: 500; margin-left: 4px; }
+
+      #game-keys {
+        position: absolute; left: 0; right: 0; bottom: 12px;
+        display: flex; flex-wrap: wrap; gap: 6px;
+        justify-content: center;
+        padding: 0 18px;
+        pointer-events: auto;
+      }
+      .game-key {
+        display: flex; flex-direction: column; align-items: center;
+        background: rgba(17,22,29,0.85);
+        backdrop-filter: blur(6px);
+        border: 1px solid #232a34;
+        border-radius: 6px;
+        padding: 8px 12px;
+        min-width: 78px;
+        font: 11px/1.3 -apple-system, "SF Mono", monospace;
+        color: #c2c5ca;
+        cursor: pointer;
+        user-select: none;
+        touch-action: none;
+        -webkit-tap-highlight-color: transparent;
+        transition: background 0.08s, border-color 0.08s, transform 0.08s;
+      }
+      .game-key.active {
+        background: #1a3a55;
+        border-color: #4a90c8;
+        color: #9ad7ff;
+        transform: translateY(-2px);
+      }
+      .game-key-label {
+        font-size: 16px; font-weight: 600; color: #9ad7ff;
+        background: #0a1118; padding: 2px 8px; border-radius: 3px;
+        margin-bottom: 4px;
+        font-family: -apple-system, "SF Mono", monospace;
+      }
+      .game-key-name { font-weight: 600; color: #e6e6e6; font-size: 12px; }
+      .game-key-desc { color: #6c7480; font-size: 9.5px; margin-top: 1px; }
+      .game-key-ctrl .game-key-label { color: #f5c542; background: #1f1a0a; }
+
+      #game-overlay {
+        position: absolute; inset: 0;
+        z-index: 10;
+        display: none;
+        align-items: center; justify-content: center;
+        background: radial-gradient(circle at 50% 35%, rgba(13,19,32,0.92), rgba(6,7,10,0.96) 75%);
+        pointer-events: auto;
+      }
+      .overlay-card {
+        max-width: 520px; padding: 36px 44px;
+        background: rgba(11,15,21,0.94);
+        border: 1px solid #2a3a4d;
+        border-radius: 10px;
+        text-align: center;
+      }
+      .overlay-title {
+        font-size: 32px; letter-spacing: 0.02em; color: #9ad7ff;
+        font-weight: 500; margin-bottom: 4px;
+      }
+      .overlay-sub { color: #6c7480; font-size: 12px; margin-bottom: 22px; letter-spacing: 0.04em; text-transform: uppercase; }
+      .overlay-body { color: #c2c5ca; font-size: 13px; line-height: 1.6; text-align: left; margin-bottom: 24px; }
+      .overlay-body p { margin: 0 0 8px; }
+      .overlay-body b { color: #9ad7ff; }
+      .overlay-cta {
+        font-size: 14px; color: #c2c5ca;
+      }
+      .overlay-cta b {
+        background: #1a3a55; color: #9ad7ff;
+        padding: 4px 10px; border-radius: 4px;
+        border: 1px solid #4a90c8;
+      }
+      .overlay-modes { display: flex; flex-direction: column; gap: 8px; }
+      .overlay-btn {
+        display: flex; justify-content: space-between; align-items: center;
+        padding: 12px 18px;
+        background: rgba(20,28,42,0.6); border: 1px solid #2a3a4d;
+        color: #c2c5ca; border-radius: 6px;
+        font: inherit; cursor: pointer;
+        transition: background 0.1s, border-color 0.1s;
+      }
+      .overlay-btn:hover { background: rgba(36,58,90,0.7); border-color: #4a90c8; }
+      .overlay-btn.primary { background: rgba(36,58,90,0.7); border-color: #4a90c8; }
+      .overlay-btn-title { font-size: 14px; color: #e6e6e6; }
+      .overlay-btn-key {
+        background: #0a1118; color: #9ad7ff;
+        padding: 3px 9px; border-radius: 3px;
+        font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase;
+        border: 1px solid #2a3a4d;
+      }
+      .overlay-count {
+        font-size: 140px; font-weight: 200; color: #9ad7ff;
+        font-variant-numeric: tabular-nums;
+        text-shadow: 0 0 60px rgba(154,215,255,0.4);
+      }
+
+      #game-win {
+        position: fixed; inset: 0; z-index: 1200;
+        display: none;
+        align-items: center; justify-content: center;
+        background: radial-gradient(circle at 50% 40%, rgba(20,40,30,0.78), rgba(6,7,10,0.92) 75%);
+        pointer-events: auto;
+      }
+      .win-card {
+        max-width: 480px; padding: 36px 44px;
+        background: rgba(11,15,21,0.96);
+        border: 1px solid #4a8c4a;
+        border-radius: 10px;
+        text-align: center;
+      }
+      .win-title {
+        font-size: 30px; color: #6cd28a; font-weight: 500;
+        letter-spacing: 0.04em; text-transform: uppercase;
+        margin-bottom: 22px;
+      }
+      .win-stats { display: flex; gap: 32px; justify-content: center; margin-bottom: 22px; }
+      .win-stats > div { display: flex; flex-direction: column; }
+      .win-num { font-size: 26px; color: #9ad7ff; font-variant-numeric: tabular-nums; font-weight: 500; }
+      .win-lbl { font-size: 10px; color: #6c7480; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 2px; }
+      .win-cta { font-size: 13px; color: #c2c5ca; margin-bottom: 18px; }
+      .win-cta b {
+        background: #1a3a55; color: #9ad7ff;
+        padding: 3px 8px; border-radius: 3px;
+        border: 1px solid #4a90c8;
+      }
+      .win-share { display: flex; gap: 8px; justify-content: center; }
+      .win-share button {
+        background: #1a2735; color: #9ad7ff;
+        border: 1px solid #2a3a4d;
+        padding: 8px 18px; border-radius: 4px;
+        cursor: pointer;
+        font: 12px/1 -apple-system, "SF Mono", monospace;
+      }
+      .win-share button:hover { background: #25364a; }
+      .win-recipe { margin-bottom: 18px; text-align: left; }
+      .win-recipe-title {
+        font-size: 10px; color: #6c7480;
+        text-transform: uppercase; letter-spacing: 0.06em;
+        margin-bottom: 8px; text-align: center;
+      }
+      .win-recipe-list { display: flex; flex-direction: column; gap: 4px; }
+      .win-recipe-row {
+        display: grid; grid-template-columns: 32px 60px 1fr auto;
+        gap: 8px; align-items: center;
+        padding: 6px 10px;
+        background: rgba(20,28,42,0.4);
+        border-radius: 4px;
+        font-size: 11px;
+      }
+      .win-recipe-key {
+        background: #0a1118; color: #9ad7ff;
+        padding: 2px 6px; border-radius: 3px;
+        font-weight: 600; text-align: center;
+        border: 1px solid #2a3a4d;
+      }
+      .win-recipe-name { color: #e6e6e6; font-weight: 500; }
+      .win-recipe-desc { color: #6c7480; font-size: 10px; }
+      .win-recipe-ms { color: #9ad7ff; font-variant-numeric: tabular-nums; }
+
+      #game-replay-banner {
+        position: absolute; top: 60px; left: 50%; transform: translateX(-50%);
+        display: none;
+        gap: 16px;
+        background: rgba(13,30,40,0.85);
+        border: 1px solid #2a4a5d;
+        padding: 8px 18px; border-radius: 4px;
+        font: 12px/1 -apple-system, "SF Mono", monospace;
+        color: #9ad7ff;
+        pointer-events: none;
+      }
+      #game-replay-banner .bnr-cta { color: #c2c5ca; }
+      #game-replay-banner .bnr-cta b {
+        background: #1a3a55; color: #9ad7ff;
+        padding: 2px 7px; border-radius: 3px;
+        border: 1px solid #4a90c8;
+      }
+
+      /* Play-page extras, drawn above the Game HUD so they stay readable. */
+      #play-ui {
+        position: fixed; inset: 0; z-index: 1150;
+        pointer-events: none;
+      }
+      #play-ui > * { pointer-events: auto; }
+
+      #play-status {
+        position: absolute; top: 60px; left: 18px;
+        display: flex; flex-direction: column; align-items: center; gap: 8px;
+        background: rgba(6,7,10,0.72);
+        backdrop-filter: blur(6px);
+        border: 1px solid #1a2735;
+        border-radius: 6px;
+        padding: 10px 14px;
+      }
+      #play-heading {
+        width: 0; height: 0;
+        border-left: 10px solid transparent;
+        border-right: 10px solid transparent;
+        border-bottom: 22px solid #9ad7ff;
+        filter: drop-shadow(0 0 6px rgba(154,215,255,0.5));
+        transform-origin: 50% 65%;
+      }
+      #play-best {
+        font: 12px/1 -apple-system, "SF Mono", monospace;
+        color: #9ad7ff;
+        font-variant-numeric: tabular-nums;
+      }
+
+      #play-retina {
+        position: absolute; top: 60px; right: 18px;
+        display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+      }
+      #retina-mini {
+        width: 256px; height: 64px;
+        image-rendering: pixelated;
+        background: #000;
+        border: 1px solid #2a3a4d;
+        border-radius: 3px;
+      }
+      #retina-caption {
+        font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase;
+        color: #6c7480;
+      }
+      #nerd-mode {
+        font-size: 11px; color: #9ad7ff; text-decoration: none;
+        border-bottom: 1px solid rgba(154,215,255,0.3);
+      }
+      #nerd-mode:hover { border-color: #9ad7ff; }
+
+      #play-captions {
+        position: absolute; bottom: 84px; left: 18px;
+        display: flex; flex-direction: column; gap: 4px;
+        max-width: 260px;
+        font-size: 11px; color: #6c7480; line-height: 1.4;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="boot">
+      <h1>webgpu-fly</h1>
+      <div class="sub">
+        a real fly brain (FlyWire, 139k neurons) talking to a real fly body
+        (TuragaLab flybody, 67 parts) — all running in your browser tab.
+      </div>
+      <div class="stages">
+        <div id="boot-brain-dot" class="dot"></div>
+        <div class="label">connectome</div>
+        <div id="boot-brain-detail" class="detail">waiting…</div>
+
+        <div id="boot-vnc-dot" class="dot"></div>
+        <div class="label">spine (VNC)</div>
+        <div id="boot-vnc-detail" class="detail">waiting…</div>
+
+        <div id="boot-body-dot" class="dot"></div>
+        <div class="label">body (flybody)</div>
+        <div id="boot-body-detail" class="detail">waiting…</div>
+      </div>
+      <div class="blink">first load downloads ~300 MB; subsequent loads are instant via IndexedDB cache</div>
+    </div>
+
+    <div id="app">
+      <div id="brain-pane"><div id="canvas-container"></div></div>
+      <div id="room-pane"><div id="room-container"></div></div>
+    </div>
+
+    <div id="play-ui">
+      <div id="play-status">
+        <div id="play-heading" title="direction to target"></div>
+        <div id="play-best">— cm</div>
+      </div>
+      <div id="play-retina">
+        <canvas id="retina-mini" width="64" height="16"></canvas>
+        <div id="retina-caption">what the fly sees</div>
+        <a id="nerd-mode" href="app.html?mode=science">nerd mode →</a>
+      </div>
+      <div id="play-captions">
+        <span>a real fly brain — every key fires real neurons</span>
+        <span>the glow is live firing</span>
+      </div>
+    </div>
+
+    <div id="out"></div>
+
+    <script type="module" src="/src/play.ts"></script>
+  </body>
+</html>
